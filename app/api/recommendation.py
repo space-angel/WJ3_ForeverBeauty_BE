@@ -148,7 +148,7 @@ async def recommend_products(request: RecommendationRequest):
             total_candidates=150,
             excluded_by_rules=12,
             penalized_products=8,
-            final_recommendations=min(request.top_n, 5),
+            final_recommendations=request.top_n,
             eligibility_rules_applied=4,
             scoring_rules_applied=3,
             query_time_ms=45.2,
@@ -157,14 +157,29 @@ async def recommend_products(request: RecommendationRequest):
             total_time_ms=245.0
         )
         
-        # 샘플 추천 결과
+        # 샘플 추천 결과 (더 많은 제품 추가)
         recommendations = []
         sample_products = [
             ("PRD_001", "하이드라 인텐시브 모이스처라이저", "뷰티랩", "모이스처라이저", 92.5),
             ("PRD_002", "센시티브 수딩 세럼", "스킨케어플러스", "세럼", 89.2),
             ("PRD_003", "안티에이징 나이트 크림", "프리미엄코스", "나이트크림", 87.8),
             ("PRD_004", "젠틀 클렌징 폼", "퓨어스킨", "클렌저", 85.1),
-            ("PRD_005", "비타민C 브라이트닝 에센스", "글로우랩", "에센스", 83.7)
+            ("PRD_005", "비타민C 브라이트닝 에센스", "글로우랩", "에센스", 83.7),
+            ("PRD_006", "콜라겐 부스팅 크림", "에이지리스", "크림", 82.3),
+            ("PRD_007", "하이알루론산 토너", "모이스트케어", "토너", 81.9),
+            ("PRD_008", "펩타이드 아이크림", "아이케어랩", "아이크림", 80.5),
+            ("PRD_009", "세라마이드 리페어 로션", "스킨바리어", "로션", 79.8),
+            ("PRD_010", "나이아신아마이드 세럼", "브라이트스킨", "세럼", 78.4),
+            ("PRD_011", "레티놀 대안 크림", "젠틀에이징", "크림", 77.6),
+            ("PRD_012", "스네일 뮤신 에센스", "리페어랩", "에센스", 76.9),
+            ("PRD_013", "세라마이드 클렌징 오일", "딥클린", "클렌징오일", 75.8),
+            ("PRD_014", "아데노신 나이트 마스크", "슬리핑케어", "마스크", 74.7),
+            ("PRD_015", "판테놀 수딩 미스트", "캄스킨", "미스트", 73.5),
+            ("PRD_016", "베타글루칸 앰플", "이뮨스킨", "앰플", 72.8),
+            ("PRD_017", "알로에 젤 크림", "네이처케어", "젤크림", 71.9),
+            ("PRD_018", "마데카소사이드 밤", "힐링스킨", "밤", 70.6),
+            ("PRD_019", "센텔라 진정 패드", "수딩케어", "패드", 69.4),
+            ("PRD_020", "아르간 오일 세럼", "오일케어", "오일세럼", 68.2)
         ]
         
         for i, (pid, name, brand, category, score) in enumerate(sample_products[:request.top_n]):
