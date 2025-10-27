@@ -63,6 +63,14 @@ class RecommendationRequest(BaseModel):
     top_n: int = Field(5, ge=1, le=20, description="추천 개수 (1-20)")
     include_reasoning: bool = Field(True, description="추천 근거 포함 여부")
     
+    # 추가 속성 (기존 서비스와의 호환성)
+    category_like: Optional[str] = Field(None, description="카테고리 필터 (호환성용)")
+    
+    @property
+    def price(self) -> Optional[Dict[str, float]]:
+        """가격 범위를 price 속성으로 접근"""
+        return self.price_range
+    
     @validator('intent_tags')
     def validate_intent_tags(cls, v):
         if not v:
@@ -74,6 +82,11 @@ class RecommendationRequest(BaseModel):
         if v < 1 or v > 20:
             raise ValueError('추천 개수는 1-20 사이여야 합니다')
         return v
+
+class PriceRange(BaseModel):
+    """가격 범위"""
+    min_price: Optional[float] = Field(None, description="최소 가격")
+    max_price: Optional[float] = Field(None, description="최대 가격")
 
 class HealthCheckRequest(BaseModel):
     """헬스체크 요청"""

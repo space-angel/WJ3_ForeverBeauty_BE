@@ -117,9 +117,15 @@ class ProductService:
         params = []
         
         # 카테고리 필터링
-        if request.category_like:
-            query += " AND (category_name LIKE ? OR category_code LIKE ?)"
-            params.extend([f"%{request.category_like}%", f"%{request.category_like}%"])
+        if hasattr(request, 'categories') and request.categories:
+            # 여러 카테고리 중 하나라도 일치하면 포함
+            category_conditions = []
+            for category in request.categories:
+                category_conditions.append("(category_name LIKE ? OR category_code LIKE ?)")
+                params.extend([f"%{category}%", f"%{category}%"])
+            
+            if category_conditions:
+                query += " AND (" + " OR ".join(category_conditions) + ")"
         
         # 가격 필터링 (가격 정보가 있는 경우) - 현재 DB에 price 컬럼이 없으므로 주석 처리
         # if request.price.min_price is not None:
