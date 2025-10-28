@@ -18,15 +18,20 @@ DATABASE_URL = os.getenv(
     "postgresql://user:password@localhost:5432/cosmetic_rules"
 )
 
-# 연결 풀 설정 (프로덕션 최적화)
+# 연결 풀 설정 (Supabase 최적화)
 engine = create_engine(
     DATABASE_URL,
     poolclass=QueuePool,
-    pool_size=10,          # 기본 연결 수
-    max_overflow=20,       # 최대 추가 연결 수
+    pool_size=5,           # 연결 수 줄임 (Supabase 제한 고려)
+    max_overflow=10,       # 최대 추가 연결 수 줄임
     pool_pre_ping=True,    # 연결 유효성 검사
-    pool_recycle=3600,     # 1시간마다 연결 재생성
-    echo=False             # SQL 로깅 (개발시에만 True)
+    pool_recycle=1800,     # 30분마다 연결 재생성 (더 자주)
+    pool_timeout=30,       # 연결 대기 시간 30초
+    echo=False,            # SQL 로깅 (개발시에만 True)
+    connect_args={
+        "sslmode": "require",
+        "application_name": "cosmetic_recommendation_api"
+    }
 )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

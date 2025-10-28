@@ -2,39 +2,36 @@
 PostgreSQL 데이터베이스 모델 정의
 룰 엔진 및 추천 시스템용 테이블
 """
-from sqlalchemy import Column, Integer, String, Text, Boolean, DateTime, Float, JSON
+from sqlalchemy import Column, Integer, String, Text, Boolean, DateTime, Float, JSON, Date
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.sql import func
 from app.database.postgres_db import Base
 
 class Rule(Base):
-    """추천 룰 테이블"""
+    """추천 룰 테이블 (실제 Supabase 스키마에 맞춤)"""
     __tablename__ = "rules"
     
-    id = Column(Integer, primary_key=True, index=True)
-    rule_id = Column(String(50), unique=True, index=True, nullable=False)
+    rule_id = Column(String(50), primary_key=True, index=True, nullable=False)
     rule_type = Column(String(20), nullable=False)  # 'eligibility' | 'scoring'
-    action = Column(String(20), nullable=False)     # 'exclude' | 'penalize'
-    
-    # 매칭 조건
+    rule_group = Column(String(20), nullable=True)
     med_code = Column(String(50), nullable=True)
+    med_name_ko = Column(String(100), nullable=True)
     ingredient_tag = Column(String(100), nullable=True)
-    condition_json = Column(JSON, nullable=True)
-    
-    # 룰 설정
-    weight = Column(Integer, default=0)
-    severity = Column(String(20), default='medium')  # 'low' | 'medium' | 'high'
-    priority = Column(Integer, default=100)
-    
-    # 설명 및 근거
+    match_type = Column(String(20), nullable=True)
+    condition_json = Column(JSONB, nullable=True)
+    action = Column(String(20), nullable=True)     # 'exclude' | 'penalize'
+    severity = Column(Integer, nullable=True)
+    weight = Column(Integer, nullable=True)
+    confidence = Column(String(20), nullable=True)
     rationale_ko = Column(Text, nullable=True)
-    rationale_en = Column(Text, nullable=True)
-    citation_url = Column(String(500), nullable=True)
-    
-    # 메타데이터
-    active = Column(Boolean, default=True)
+    citation_source = Column(String(200), nullable=True)
+    citation_url = Column(JSONB, nullable=True)
+    reviewer = Column(String(100), nullable=True)
+    reviewed_at = Column(Date, nullable=True)
+    expires_at = Column(Date, nullable=True)
+    ruleset_version = Column(String(20), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-    created_by = Column(String(100), nullable=True)
+    active = Column(Boolean, default=True)
     
     def __repr__(self):
         return f"<Rule(rule_id='{self.rule_id}', type='{self.rule_type}', action='{self.action}')>"

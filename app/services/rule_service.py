@@ -90,11 +90,16 @@ class RuleService:
     
     def _load_rules_from_postgres(self):
         """PostgreSQL에서 룰 로딩"""
+        session = None
         try:
             from app.models.postgres_models import Rule
+            from app.database.postgres_db import get_db_session_sync
+            
+            # 새로운 세션 생성 (기존 세션 문제 회피)
+            session = get_db_session_sync()
             
             # 배제 룰
-            eligibility_rules = self.session.query(Rule).filter(
+            eligibility_rules = session.query(Rule).filter(
                 Rule.rule_type == 'eligibility',
                 Rule.active == True
             ).all()
@@ -104,7 +109,7 @@ class RuleService:
             ]
             
             # 감점 룰
-            scoring_rules = self.session.query(Rule).filter(
+            scoring_rules = session.query(Rule).filter(
                 Rule.rule_type == 'scoring',
                 Rule.active == True
             ).all()
@@ -121,6 +126,10 @@ class RuleService:
         except Exception as e:
             logger.error(f"PostgreSQL 룰 로딩 오류: {e}")
             raise
+        finally:
+            # 세션 정리
+            if session:
+                session.close()
     
     def _load_rules_from_json(self):
         """JSON 파일에서 룰 로딩"""
