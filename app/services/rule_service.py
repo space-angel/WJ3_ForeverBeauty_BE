@@ -27,8 +27,8 @@ class RuleService:
             self.use_postgres = False
             
             try:
-                from app.database import get_db_session
-                self.session = get_db_session()
+                from app.database.postgres_db import get_db_session_sync
+                self.session = get_db_session_sync()
                 self.use_postgres = True
                 logger.info("PostgreSQL 연결 성공")
             except Exception as e:
