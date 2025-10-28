@@ -1,10 +1,12 @@
 """
-추천 API
+추천 API - 실제 추천 엔진 연동
 """
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
-from typing import List, Optional, Dict, Any
 import logging
+
+# 기존 모델 임포트
+from app.models.request import RecommendationRequest
+from app.models.response import RecommendationResponse
 
 logger = logging.getLogger(__name__)
 
@@ -14,92 +16,75 @@ router = APIRouter(
     tags=["recommendation"]
 )
 
-# 요청 모델
-class UserProfile(BaseModel):
-    age_group: Optional[str] = None
-    gender: Optional[str] = None
-    skin_type: Optional[str] = None
-    skin_concerns: Optional[List[str]] = None
-    allergies: Optional[List[str]] = None
-
-class RecommendationRequest(BaseModel):
-    intent_tags: List[str]
-    user_profile: Optional[UserProfile] = None
-    top_n: Optional[int] = 5
-
-# 응답 모델
-class RecommendationItem(BaseModel):
-    product_id: str
-    name: str
-    brand: str
-    category: str
-    price: Optional[int] = None
-    score: float
-    reasons: List[str]
-
-class RecommendationResponse(BaseModel):
-    recommendations: List[RecommendationItem]
-    total_found: int
-    execution_time_ms: float
-    request_id: str
-
 @router.post("/recommend", response_model=RecommendationResponse)
 async def recommend_products(request: RecommendationRequest):
     """
-    화장품 추천 API
+    화장품 추천 API - 실제 추천 엔진 사용
     """
     try:
-        import time
-        import uuid
+        # 실제 추천 엔진 사용
+        from app.services.recommendation_engine import RecommendationEngine
         
-        start_time = time.time()
+        engine = RecommendationEngine()
+        response = await engine.recommend(request)
         
-        # 간단한 목업 데이터로 응답
-        mock_recommendations = [
-            RecommendationItem(
-                product_id="prod_001",
-                name="하이드레이팅 모이스처라이저",
-                brand="뷰티브랜드",
-                category="moisturizer",
-                price=45000,
-                score=0.95,
-                reasons=["보습 효과 우수", "30대 건성 피부에 적합", "안티에이징 성분 함유"]
-            ),
-            RecommendationItem(
-                product_id="prod_002", 
-                name="리뉴얼 세럼",
-                brand="스킨케어",
-                category="serum",
-                price=65000,
-                score=0.88,
-                reasons=["주름 개선 효과", "보습과 안티에이징 동시 효과"]
-            ),
-            RecommendationItem(
-                product_id="prod_003",
-                name="너리싱 나이트 크림",
-                brand="프리미엄케어",
-                category="night_cream", 
-                price=55000,
-                score=0.82,
-                reasons=["야간 집중 케어", "건성 피부 맞춤형"]
-            )
-        ]
+        return response
         
-        # 요청된 개수만큼 제한
-        recommendations = mock_recommendations[:request.top_n]
-        
-        execution_time = (time.time() - start_time) * 1000
-        
-        return RecommendationResponse(
-            recommendations=recommendations,
-            total_found=len(mock_recommendations),
-            execution_time_ms=round(execution_time, 2),
-            request_id=str(uuid.uuid4())
-        )
-        
+    except ValueError as e:
+        logger.warning(f"잘못된 요청: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"추천 처리 오류: {e}")
-        raise HTTPException(status_code=500, detail="추천 처리 중 오류가 발생했습니다")
+        # 실제 엔진 실패 시 폴백 응답
+        from app.models.response import (
+            RecommendationResponse, ExecutionSummary, PipelineStatistics, 
+            RecommendationItem
+        )
+        from datetime import datetime
+        from uuid import uuid4
+        
+        request_id = uuid4()
+        
+        fallback_item = RecommendationItem(
+            rank=1,
+            product_id="fallback_001",
+            product_name="시스템 오류 - 추천 불가",
+            brand_name="시스템",
+            category="error",
+            final_score=0.0,
+            intent_match_score=0.0,
+            reasons=["추천 엔진 오류로 인한 폴백 응답"],
+            warnings=["시스템 오류가 발생했습니다. 잠시 후 다시 시도해주세요."]
+        )
+        
+        execution_summary = ExecutionSummary(
+            request_id=request_id,
+            timestamp=datetime.now(),
+            success=False,
+            execution_time_seconds=0.0,
+            ruleset_version="error",
+            active_rules_count=0
+        )
+        
+        pipeline_stats = PipelineStatistics(
+            total_candidates=0,
+            excluded_by_rules=0,
+            penalized_products=0,
+            final_recommendations=1,
+            eligibility_rules_applied=0,
+            scoring_rules_applied=0,
+            query_time_ms=0.0,
+            evaluation_time_ms=0.0,
+            ranking_time_ms=0.0,
+            total_time_ms=0.0
+        )
+        
+        return RecommendationResponse(
+            execution_summary=execution_summary,
+            input_summary={"error": "추천 엔진 오류"},
+            pipeline_statistics=pipeline_stats,
+            recommendations=[fallback_item]
+        )
 
 @router.get("/recommend/health")
 async def recommendation_health():
