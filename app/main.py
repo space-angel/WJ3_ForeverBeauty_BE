@@ -336,17 +336,12 @@ async def general_exception_handler(request: Request, exc: Exception):
         }
     )
 
-# 라우터 등록 (리팩토링된 버전)
-try:
-    from app.api.recommendation_controller import router as recommendation_router_new
-    app.include_router(recommendation_router_new)
-    logger.info("새로운 추천 컨트롤러 로드 성공")
-except Exception as e:
-    logger.warning(f"새로운 컨트롤러 로드 실패, 기존 컨트롤러 사용: {e}")
-    from app.api.recommendation import router as recommendation_router
-    app.include_router(recommendation_router)
-
+# 라우터 등록
+from app.api.recommendation import router as recommendation_router, legacy_router
 from app.api.admin import router as admin_router
+
+app.include_router(recommendation_router)
+app.include_router(legacy_router)
 app.include_router(admin_router)
 
 # 루트 엔드포인트
