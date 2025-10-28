@@ -186,9 +186,9 @@ class ScoringEngine:
                     results[product.product_id] = ScoringResult(product_id=product.product_id)
                 return results
             
-            # 제품별 성분 태그 배치 로딩
+            # 제품별 성분 태그 배치 로딩 (제품 자체 태그 사용)
             product_ids = [p.product_id for p in products]
-            product_tags = self.ingredient_service.get_canonical_tags_batch(product_ids)
+            product_tags = {p.product_id: p.tags for p in products}
             
             # 의약품 코드 해석
             med_codes = request.med_profile.codes if request.med_profile else []
@@ -310,12 +310,20 @@ class ScoringEngine:
                 applicable.append(rule)
                 continue
             
-            # 성분 태그 매칭
+            # 성분 태그 매칭 (유연한 매칭)
             if rule.get('ingredient_tag'):
                 rule_tag = rule['ingredient_tag'].lower().strip()
+                
+                # 정확한 매칭 시도
                 if rule_tag in normalized_tags:
                     applicable.append(rule)
                     continue
+                
+                # 부분 매칭 시도 (aha -> aha_family)
+                for product_tag in normalized_tags:
+                    if rule_tag in product_tag or product_tag in rule_tag:
+                        applicable.append(rule)
+                        break
         
         return applicable
     

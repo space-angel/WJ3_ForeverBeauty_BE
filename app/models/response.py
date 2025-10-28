@@ -47,7 +47,7 @@ class RuleHit(BaseModel):
     rule_id: str
     weight: int
     rationale_ko: str
-    citation_url: Optional[str] = None
+    citation_url: Optional[List[str]] = None
 
 class ProductRecommendation(BaseModel):
     """제품 추천 정보"""

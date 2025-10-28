@@ -72,6 +72,9 @@ class RecommendationEngine:
     ) -> RecommendationPipeline:
         """추천 파이프라인 실행"""
         
+        # 0단계: 요청 전처리 (medications -> med_profile 변환)
+        self._preprocess_request(request)
+        
         # 1단계: 후보 제품 조회
         candidates = self.product_service.get_candidate_products(
             request, limit=1000
@@ -108,7 +111,8 @@ class RecommendationEngine:
             'excluded_count': eligibility_result.total_excluded,
             'safe_count': len(safe_products),
             'final_count': len(ranked_products),
-            'execution_time_ms': execution_time
+            'execution_time_ms': execution_time,
+            'eligibility_rules_applied': getattr(eligibility_result, 'rules_applied', 0)
         }
         
         return RecommendationPipeline(
@@ -141,14 +145,18 @@ class RecommendationEngine:
             active_rules_count=28
         )
         
+        # 감점 통계 계산
+        penalized_count = len(pipeline.scored_products) if pipeline.scored_products else 0
+        total_scoring_rules = sum(len(result.rule_hits) for result in pipeline.scored_products.values()) if pipeline.scored_products else 0
+        
         # 파이프라인 통계
         pipeline_stats = PipelineStatistics(
             total_candidates=pipeline.statistics['total_candidates'],
             excluded_by_rules=pipeline.statistics['excluded_count'],
-            penalized_products=0,  # TODO: 실제 감점 제품 수
+            penalized_products=penalized_count,
             final_recommendations=len(pipeline.ranked_products),
-            eligibility_rules_applied=0,  # TODO: 적용된 룰 수
-            scoring_rules_applied=0,
+            eligibility_rules_applied=pipeline.statistics.get('eligibility_rules_applied', 0),
+            scoring_rules_applied=total_scoring_rules,
             query_time_ms=50.0,
             evaluation_time_ms=pipeline.execution_time * 0.6,
             ranking_time_ms=pipeline.execution_time * 0.4,
@@ -188,6 +196,22 @@ class RecommendationEngine:
             pipeline_statistics=pipeline_stats,
             recommendations=recommendations
         )
+    
+    def _preprocess_request(self, request: RecommendationRequest):
+        """요청 전처리 - medications를 med_profile로 변환"""
+        if request.medications and not request.med_profile:
+            from app.models.request import MedProfile
+            
+            # medications에서 active_ingredients 추출
+            med_codes = []
+            for medication in request.medications:
+                if medication.active_ingredients:
+                    med_codes.extend(medication.active_ingredients)
+            
+            # med_profile 생성
+            request.med_profile = MedProfile(codes=med_codes)
+            
+            logger.info(f"의약품 코드 변환: {len(med_codes)}개 - {med_codes}")
     
     def _build_error_response(
         self,

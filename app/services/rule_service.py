@@ -357,7 +357,7 @@ class RuleService:
         return self._scoring_rules_cache or []
     
     def resolve_med_codes_batch(self, codes: List[str]) -> Dict[str, List[str]]:
-        """의약품 코드 배치 해석"""
+        """의약품 코드 배치 해석 (양방향 매핑 지원)"""
         result = {}
         
         for code in codes:
@@ -366,8 +366,17 @@ class RuleService:
                 resolved = self._med_aliases.get(code, [code])
                 result[code] = resolved
             else:
-                # 단일 코드
-                result[code] = [code]
+                # 단일 코드 -> 별칭 그룹 찾기
+                resolved_codes = [code]  # 기본적으로 자기 자신 포함
+                
+                # 역방향 매핑: 이 코드가 포함된 별칭 그룹 찾기
+                for alias_key, alias_codes in self._med_aliases.items():
+                    if code in alias_codes:
+                        resolved_codes.append(alias_key)
+                        resolved_codes.extend(alias_codes)
+                
+                # 중복 제거
+                result[code] = list(set(resolved_codes))
         
         return result
     
