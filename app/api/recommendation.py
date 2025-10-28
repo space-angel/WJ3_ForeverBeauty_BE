@@ -1,31 +1,17 @@
 """
-화장품 추천 API 엔드포인트
-개인화된 화장품 추천 서비스를 제공합니다.
+레거시 추천 API (리팩토링 중)
+새로운 컨트롤러로 이전 예정
 """
-from fastapi import APIRouter, HTTPException, Query, Depends
-from fastapi.responses import JSONResponse
-from datetime import datetime
-from uuid import uuid4
-from typing import Optional, List
+from fastapi import APIRouter
 import logging
 
-from app.models.request import RecommendationRequest, HealthCheckRequest
-from app.models.response import (
-    RecommendationResponse, HealthResponse, ErrorResponse,
-    ExecutionSummary, PipelineStatistics, RecommendationItem,
-    RulesetHealth, RuleHit
-)
+# 새로운 컨트롤러 임포트
+from app.api.recommendation_controller import router as new_router
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(
-    prefix="/api/v1",
-    tags=["recommendation"],
-    responses={
-        400: {"model": ErrorResponse, "description": "잘못된 요청"},
-        500: {"model": ErrorResponse, "description": "서버 내부 오류"}
-    }
-)
+# 기존 라우터를 새 라우터로 대체
+router = new_router
 
 @router.post(
     "/recommend",

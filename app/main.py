@@ -315,8 +315,11 @@ async def general_exception_handler(request: Request, exc: Exception):
         }
     )
 
-# 라우터 등록
-app.include_router(recommendation_router)
+# 라우터 등록 (리팩토링된 버전)
+from app.api.recommendation_controller import router as recommendation_router_new
+from app.api.admin import router as admin_router
+
+app.include_router(recommendation_router_new)
 app.include_router(admin_router)
 
 # 루트 엔드포인트
