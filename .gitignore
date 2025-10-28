@@ -34,8 +34,8 @@ ENV/
 *.swp
 *.swo
 
-# Database
-*.db
+# Database (exclude cosmetics.db from ignore)
+# *.db
 *.sqlite3
 
 # Logs
