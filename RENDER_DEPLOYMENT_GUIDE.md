@@ -24,9 +24,12 @@
 ### 2.3 서비스 설정
 - **Name**: `cosmetic-recommendation-api`
 - **Environment**: `Python 3`
-- **Build Command**: `pip install -r requirements.txt`
-- **Start Command**: `./start.sh` 또는 `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
+- **Build Command**: `pip install --upgrade pip && pip install -r requirements.txt`
+- **Start Command**: `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
 - **Instance Type**: `Free` (시작용) 또는 `Starter` (프로덕션용)
+
+### 2.3.1 Python 버전 설정
+- **Python Version**: `3.11.9` (runtime.txt에서 자동 감지)
 
 ### 2.4 환경 변수 설정
 Render 대시보드의 Environment 탭에서 다음 변수들을 설정:
@@ -101,7 +104,14 @@ curl https://your-app-name.onrender.com/api/v1/admin/health
 
 #### 빌드 실패
 - `requirements.txt` 파일 확인
-- Python 버전 호환성 확인
+- Python 버전 호환성 확인 (3.11.9 권장)
+- `runtime.txt`로 Python 버전 고정
+- 패키지 버전 충돌 시 범위 버전 사용 (예: `>=2.5.0,<3.0.0`)
+
+#### pydantic-core 컴파일 에러
+- Python 3.11 사용 (3.13은 일부 패키지와 호환성 문제)
+- 빌드 명령어에 `pip install --upgrade pip` 추가
+- 필요시 Docker 빌드 사용
 
 #### 시작 실패
 - 환경 변수 설정 확인
