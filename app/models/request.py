@@ -50,6 +50,18 @@ class MedicationInfo(BaseModel):
     usage_frequency: Optional[str] = Field(None, description="복용 빈도")
     dosage: Optional[str] = Field(None, description="용량")
 
+class MedProfile(BaseModel):
+    """의약품 프로필"""
+    codes: List[str] = Field(default_factory=list, description="의약품 코드")
+    preg_lact: bool = Field(False, description="임신/수유 여부")
+
+class UseContext(BaseModel):
+    """사용 맥락"""
+    leave_on: bool = Field(True, description="피부에 남겨두는 제품 여부")
+    day_use: bool = Field(True, description="주간 사용 여부")
+    face: bool = Field(True, description="얼굴 사용 여부")
+    large_area_hint: bool = Field(False, description="넓은 부위 사용 여부")
+
 class RecommendationRequest(BaseModel):
     """추천 요청"""
     intent_tags: List[str] = Field(..., min_items=1, description="의도 태그 (moisturizing, anti-aging, cleansing, etc.)")
@@ -65,6 +77,8 @@ class RecommendationRequest(BaseModel):
     
     # 추가 속성 (기존 서비스와의 호환성)
     category_like: Optional[str] = Field(None, description="카테고리 필터 (호환성용)")
+    med_profile: Optional[MedProfile] = Field(None, description="의약품 프로필 (엔진 호환성용)")
+    use_context: Optional[UseContext] = Field(None, description="사용 맥락 (엔진 호환성용)")
     
     @property
     def price(self) -> Optional[Dict[str, float]]:

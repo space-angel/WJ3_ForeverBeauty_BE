@@ -353,53 +353,108 @@ async def recommend_products(request: RecommendationRequest):
         )
     
 def calculate_enhanced_intent_score(product, intent_tags: List[str]) -> float:
-        """향상된 의도 매칭 점수 계산 (한국어-영어 매핑 포함)"""
-        if not intent_tags or not product.tags:
-            return 30.0  # 기본 점수
-        
-        # 영어-한국어 의도 태그 매핑
-        intent_mapping = {
-            'moisturizing': ['보습', '수분', '촉촉'],
-            'hydrating': ['수분', '보습', '히알루론산'],
-            'anti-aging': ['안티에이징', '주름', '탄력', '노화방지'],
-            'cleansing': ['클렌징', '세정', '깨끗'],
-            'brightening': ['미백', '브라이트닝', '화이트닝'],
-            'acne-care': ['여드름', '트러블', '진정'],
-            'sensitive-care': ['민감', '순한', '저자극'],
-            'soothing': ['진정', '수딩', '카밍'],
-            'firming': ['탄력', '리프팅', '퍼밍'],
-            'pore-care': ['모공', '포어']
-        }
-        
-        # 제품 태그 정규화
+        """고도화된 의도 매칭 점수 계산"""
         try:
-            if isinstance(product.tags, str):
-                import json
-                product_tags = json.loads(product.tags)
-            else:
-                product_tags = product.tags or []
-        except:
+            from app.services.intent_matching_service import AdvancedIntentMatcher
+            
+            # 고도화된 매칭 엔진 사용
+            matcher = AdvancedIntentMatcher()
+            result = matcher.calculate_intent_match_score(product, intent_tags)
+            
+            return result.total_score
+            
+        except Exception as e:
+            logger.warning(f"고도화된 의도 매칭 실패, 기본 로직 사용: {e}")
+            
+            # 폴백: 기존 로직 (개선된 버전)
+            if not intent_tags:
+                return 30.0
+            
+            # 확장된 의도-키워드 매핑
+            intent_mapping = {
+                'moisturizing': ['보습', '수분', '촉촉', '히알루론산', '글리세린'],
+                'hydrating': ['수분', '보습', '히알루론산', '아쿠아', '워터'],
+                'anti-aging': ['안티에이징', '주름', '탄력', '노화방지', '펩타이드', '콜라겐'],
+                'cleansing': ['클렌징', '세정', '깨끗', '폼', '워시'],
+                'brightening': ['미백', '브라이트닝', '화이트닝', '비타민C', '나이아신아마이드'],
+                'acne-care': ['여드름', '트러블', '진정', '시카', '센텔라', 'AC', '약콩'],
+                'sensitive-care': ['민감', '순한', '저자극', '베이비', '센시티브'],
+                'soothing': ['진정', '수딩', '카밍', '알로에', '카모마일'],
+                'firming': ['탄력', '리프팅', '퍼밍', '펩타이드'],
+                'pore-care': ['모공', '포어', '블랙헤드', 'BHA', 'AHA']
+            }
+            
+            # 제품 태그 파싱
             product_tags = []
-        
-        # 매칭 점수 계산
-        total_score = 0
-        for intent_tag in intent_tags:
-            korean_tags = intent_mapping.get(intent_tag, [])
-            for korean_tag in korean_tags:
-                if any(korean_tag in str(tag) for tag in product_tags):
-                    total_score += 25  # 태그당 25점
-                    break
-        
-        # 제품명에서도 키워드 매칭
-        product_name = product.name.lower()
-        for intent_tag in intent_tags:
-            korean_tags = intent_mapping.get(intent_tag, [])
-            for korean_tag in korean_tags:
-                if korean_tag in product_name:
-                    total_score += 10  # 제품명 매칭 시 10점 추가
-                    break
-        
-        return min(total_score, 100)  # 최대 100점
+            if hasattr(product, 'tags') and product.tags:
+                try:
+                    if isinstance(product.tags, str):
+                        import json
+                        product_tags = json.loads(product.tags)
+                    else:
+                        product_tags = product.tags or []
+                except:
+                    product_tags = []
+            
+            # 다층 매칭 점수 계산
+            total_score = 0
+            matched_intents = 0
+            
+            for intent_tag in intent_tags:
+                intent_score = 0
+                keywords = intent_mapping.get(intent_tag, [])
+                
+                # 1. 태그 매칭 (높은 가중치)
+                for keyword in keywords:
+                    if any(keyword in str(tag) for tag in product_tags):
+                        intent_score += 30
+                        break
+                
+                # 2. 제품명 매칭 (중간 가중치)
+                product_name = product.name.lower()
+                for keyword in keywords:
+                    if keyword in product_name:
+                        intent_score += 20
+                        break
+                
+                # 3. 카테고리 적합성 (낮은 가중치)
+                if hasattr(product, 'category_name'):
+                    category_bonus = calculate_category_intent_bonus(
+                        product.category_name, intent_tag
+                    )
+                    intent_score += category_bonus
+                
+                if intent_score > 0:
+                    matched_intents += 1
+                    total_score += intent_score
+            
+            # 다중 의도 매칭 보너스
+            if matched_intents > 1:
+                total_score += matched_intents * 5
+            
+            return min(total_score, 100.0)
+
+def calculate_category_intent_bonus(category_name: str, intent_tag: str) -> float:
+    """카테고리-의도 적합성 보너스"""
+    if not category_name:
+        return 0.0
+    
+    category_intent_map = {
+        'moisturizing': ['크림', '로션', '에센스', '세럼'],
+        'anti-aging': ['크림', '세럼', '앰플', '아이크림'],
+        'acne-care': ['세럼', '앰플', '토너', '클렌저'],
+        'brightening': ['세럼', '앰플', '크림', '마스크'],
+        'cleansing': ['클렌저', '폼', '워시'],
+        'soothing': ['젤', '미스트', '마스크', '크림'],
+        'pore-care': ['토너', '세럼', '마스크']
+    }
+    
+    suitable_categories = category_intent_map.get(intent_tag, [])
+    for suitable_cat in suitable_categories:
+        if suitable_cat in category_name:
+            return 10.0
+    
+    return 0.0
     
 def calculate_category_bonus(product, request) -> float:
         """카테고리 보너스 점수"""
