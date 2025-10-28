@@ -212,19 +212,40 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+# 환경 변수에서 설정 읽기
+import os
+DEBUG = os.getenv("DEBUG", "False").lower() == "true"
+ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
+
 # CORS 미들웨어
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # 프로덕션에서는 특정 도메인으로 제한
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+if DEBUG:
+    # 개발 환경
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+    allowed_hosts = ["*"]
+else:
+    # 프로덕션 환경
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[
+            "https://your-frontend-domain.com",  # 실제 프론트엔드 도메인으로 변경
+            "http://localhost:3000",  # 로컬 개발용
+        ],
+        allow_credentials=True,
+        allow_methods=["GET", "POST"],
+        allow_headers=["*"],
+    )
+    allowed_hosts = ["*.onrender.com", "your-custom-domain.com"]
 
 # 신뢰할 수 있는 호스트 미들웨어
 app.add_middleware(
     TrustedHostMiddleware,
-    allowed_hosts=["*"]  # 프로덕션에서는 특정 호스트로 제한
+    allowed_hosts=allowed_hosts
 )
 
 # 요청 로깅 미들웨어
