@@ -283,12 +283,12 @@ class RuleService:
             'rule_type': rule.rule_type,
             'med_code': rule.med_code,
             'ingredient_tag': rule.ingredient_tag,
-            'condition_json': json.loads(rule.condition_json) if rule.condition_json else {},
+            'condition_json': rule.condition_json if rule.condition_json else {},
             'action': rule.action,
             'weight': rule.weight,
             'severity': getattr(rule, 'severity', 'medium'),
             'rationale_ko': rule.rationale_ko,
-            'citation_url': rule.citation_url
+            'citation_url': rule.citation_url if rule.citation_url else []
         }
     
     def get_rule_statistics(self) -> Dict[str, Any]:
