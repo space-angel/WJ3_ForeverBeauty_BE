@@ -137,9 +137,9 @@ class ScoringEngine:
         if rule['action'] != 'penalize':
             return False
         
-        # weight 확인 (감점 룰은 weight가 있어야 함)
+        # weight 확인 (감점 룰은 weight가 있어야 함, 음수 허용)
         weight = rule.get('weight', 0)
-        if not isinstance(weight, (int, float)) or weight <= 0:
+        if not isinstance(weight, (int, float)) or weight == 0:
             return False
         
         # med_code나 ingredient_tag 중 하나는 있어야 함
