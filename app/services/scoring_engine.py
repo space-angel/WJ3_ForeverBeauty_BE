@@ -38,14 +38,14 @@ class ScoringResult:
         if rule_group:
             self.rule_groups_applied.add(rule_group)
         
-        self.final_score = max(0, self.base_score - self.penalty_score)
+        self.final_score = max(0, self.base_score + self.penalty_score)
     
     def apply_severity_multiplier(self, multiplier: float):
         """심각도 배수 적용"""
         self.severity_multiplier = multiplier
         adjusted_penalty = int(self.penalty_score * multiplier)
         self.penalty_score = adjusted_penalty
-        self.final_score = max(0, self.base_score - self.penalty_score)
+        self.final_score = max(0, self.base_score + self.penalty_score)
 
 class ScoringEngine:
     """
