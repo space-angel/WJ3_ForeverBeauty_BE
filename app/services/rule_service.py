@@ -91,7 +91,7 @@ class RuleService:
     def _load_rules_from_postgres(self):
         """PostgreSQL에서 룰 로딩"""
         try:
-            from app.models.sqlite_models import Rule
+            from app.models.postgres_models import Rule
             
             # 배제 룰
             eligibility_rules = self.session.query(Rule).filter(
