@@ -176,16 +176,13 @@ class RuleService:
             logger.error(f"PostgreSQL 룰 로딩 오류: {e}")
             raise
         finally:
-            # 세션 정리 (비동기 함수를 동기적으로 실행)
-            if session:
+            # 세션 정리
+            if hasattr(self, 'session') and self.session:
                 try:
-                    import asyncio
-                    loop = asyncio.get_event_loop()
-                    if loop.is_running():
-                        # 이미 실행 중인 루프가 있으면 스케줄링
-                        asyncio.create_task(session.close())
-                    else:
-                        loop.run_until_complete(session.close())
+                    if hasattr(self.session, 'closeall'):
+                        self.session.closeall()
+                    elif hasattr(self.session, 'close'):
+                        self.session.close()
                 except Exception as e:
                     logger.warning(f"세션 종료 중 오류 (무시됨): {e}")
     
@@ -630,13 +627,11 @@ class RuleService:
         """세션 종료"""
         if self.session:
             try:
-                import asyncio
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    # 이미 실행 중인 루프가 있으면 스케줄링
-                    asyncio.create_task(self.session.close())
-                else:
-                    loop.run_until_complete(self.session.close())
+                # ThreadedConnectionPool의 경우 closeall() 메서드 사용
+                if hasattr(self.session, 'closeall'):
+                    self.session.closeall()
+                elif hasattr(self.session, 'close'):
+                    self.session.close()
                 # PostgreSQL 세션 종료
             except Exception as e:
                 logger.error(f"세션 종료 오류: {e}")
