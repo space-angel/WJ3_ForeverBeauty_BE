@@ -10,6 +10,15 @@ from contextlib import asynccontextmanager
 import logging
 import time
 from datetime import datetime
+import os
+
+# .env 파일 로드
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+    print(f"DATABASE_URL loaded: {os.getenv('DATABASE_URL')[:50]}..." if os.getenv('DATABASE_URL') else "DATABASE_URL not found")
+except ImportError:
+    print("python-dotenv not installed, using system environment variables")
 
 from app.api.recommendation import router as recommendation_router
 from app.api.admin import router as admin_router
@@ -28,30 +37,76 @@ async def lifespan(app: FastAPI):
     # 시작 시
     logger.info("화장품 추천 API 서버 시작")
     
-    # 데이터베이스 연결 테스트
-    try:
-        from app.database.sqlite_db import get_sqlite_db
-        sqlite_db = get_sqlite_db()
-        if sqlite_db.test_connection():
-            logger.info("SQLite 데이터베이스 연결 성공")
-        else:
-            logger.warning("SQLite 데이터베이스 연결 실패")
-    except Exception as e:
-        logger.error(f"SQLite 연결 테스트 실패: {e}")
+    # PostgreSQL 초기화 (동기/비동기 모두 시도)
+    db_initialized = False
     
+    # 1. 동기 DB 초기화 시도
+    try:
+        from app.database.postgres_sync import init_sync_database
+        logger.info("동기 데이터베이스 연결 초기화 시작")
+        await init_sync_database()
+        logger.info("동기 데이터베이스 연결 초기화 완료")
+        db_initialized = True
+    except Exception as e:
+        logger.warning(f"동기 데이터베이스 초기화 실패: {e}")
+    
+    # 2. 비동기 DB 초기화 시도 (동기 실패 시 또는 추가로)
+    if not db_initialized:
+        try:
+            import asyncio
+            from app.database.postgres_db import init_database
+            
+            logger.info("비동기 데이터베이스 연결 초기화 시작")
+            await init_database()
+            logger.info("비동기 데이터베이스 연결 초기화 완료")
+            db_initialized = True
+            
+        except Exception as e:
+            logger.error(f"비동기 데이터베이스 초기화 실패: {e}")
+    
+    if not db_initialized:
+        logger.error("모든 데이터베이스 초기화 실패 - fallback 모드로 진행")
+        # fallback 모드로 진행 (서버 중단하지 않음)
+    
+    # 룰 서비스 초기화
     try:
         from app.services.rule_service import RuleService
         rule_service = RuleService()
         stats = rule_service.get_rule_statistics()
-        logger.info(f"PostgreSQL 연결 성공 - 활성 룰: {stats['active_rules']}개")
+        logger.info("룰 서비스 초기화 완료")
         rule_service.close_session()
     except Exception as e:
-        logger.error(f"PostgreSQL 연결 테스트 실패: {e}")
+        logger.warning(f"룰 서비스 초기화 실패: {e}")
     
     yield
     
-    # 종료 시
-    logger.info("화장품 추천 API 서버 종료")
+    # 종료 시 - 안전한 정리
+    logger.info("애플리케이션 종료 시작")
+    
+    # 데이터베이스 연결 정리
+    try:
+        # 동기 DB 종료
+        from app.database.postgres_sync import close_sync_database
+        close_sync_database()
+        
+        # 비동기 DB 종료
+        import asyncio
+        from app.database.postgres_db import close_database
+        close_task = asyncio.create_task(close_database())
+        try:
+            await asyncio.wait_for(close_task, timeout=1.0)
+            logger.info("데이터베이스 연결 종료 완료")
+        except asyncio.TimeoutError:
+            logger.warning("비동기 DB 종료 시간 초과")
+            close_task.cancel()
+            try:
+                await close_task
+            except asyncio.CancelledError:
+                pass
+    except Exception as e:
+        logger.warning(f"데이터베이스 연결 종료 중 오류 (무시됨): {e}")
+    
+    logger.info("화장품 추천 API 서버 종료 완료")
 
 # FastAPI 애플리케이션 생성
 app = FastAPI(
@@ -242,11 +297,11 @@ else:
     )
     allowed_hosts = ["*.onrender.com", "your-custom-domain.com"]
 
-# 신뢰할 수 있는 호스트 미들웨어
-app.add_middleware(
-    TrustedHostMiddleware,
-    allowed_hosts=allowed_hosts
-)
+# 신뢰할 수 있는 호스트 미들웨어 (개발 중 비활성화)
+# app.add_middleware(
+#     TrustedHostMiddleware,
+#     allowed_hosts=allowed_hosts
+# )
 
 # 요청 로깅 미들웨어
 @app.middleware("http")
@@ -254,8 +309,8 @@ async def log_requests(request: Request, call_next):
     """요청 로깅 미들웨어"""
     start_time = time.time()
     
-    # 요청 정보 로깅
-    logger.info(
+    # 요청 정보 로깅 (DEBUG 레벨)
+    logger.debug(
         f"요청 시작: {request.method} {request.url.path} "
         f"from {request.client.host if request.client else 'unknown'}"
     )
@@ -266,8 +321,8 @@ async def log_requests(request: Request, call_next):
     # 응답 시간 계산
     process_time = time.time() - start_time
     
-    # 응답 정보 로깅
-    logger.info(
+    # 응답 정보 로깅 (DEBUG 레벨)
+    logger.debug(
         f"요청 완료: {request.method} {request.url.path} "
         f"status={response.status_code} time={process_time:.3f}s"
     )
@@ -339,10 +394,12 @@ async def general_exception_handler(request: Request, exc: Exception):
 # 라우터 등록
 from app.api.recommendation import router as recommendation_router, legacy_router
 from app.api.admin import router as admin_router
+# from app.api.performance import router as performance_router  # psutil 의존성으로 임시 비활성화
 
 app.include_router(recommendation_router)
 app.include_router(legacy_router)
 app.include_router(admin_router)
+# app.include_router(performance_router, prefix="/api/v1")  # 임시 비활성화
 
 # 루트 엔드포인트
 @app.get(

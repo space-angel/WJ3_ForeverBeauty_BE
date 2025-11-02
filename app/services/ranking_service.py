@@ -10,9 +10,9 @@ import time
 from datetime import datetime
 
 from app.services.product_service import ProductService
-from app.services.scoring_engine import ScoringResult
+# ScoringResult 클래스가 없으므로 Dict 사용
 from app.models.request import RecommendationRequest
-from app.models.sqlite_models import Product
+from app.models.postgres_models import Product
 from app.models.response import ProductRecommendation, RuleHit
 
 logger = logging.getLogger(__name__)
@@ -89,7 +89,7 @@ class RankingService:
             self._ranking_count = 0
             self._total_ranking_time = 0.0
             
-            logger.info("RankingService 초기화 완료")
+            # RankingService 초기화 완료
             
         except Exception as e:
             logger.error(f"RankingService 초기화 실패: {e}")
@@ -98,7 +98,7 @@ class RankingService:
     def rank_products(
         self,
         products: List[Product],
-        scoring_results: Dict[int, ScoringResult],
+        scoring_results: Dict[int, Dict[str, Any]],
         request: RecommendationRequest,
         excluded_products: Set[int] = None
     ) -> List[RankedProduct]:
@@ -152,11 +152,11 @@ class RankingService:
                 ranked_product = RankedProduct(
                     product=product,
                     rank=0,  # 나중에 설정
-                    final_score=scoring_result.final_score if scoring_result else 100,
-                    base_score=scoring_result.base_score if scoring_result else 100,
-                    penalty_score=scoring_result.penalty_score if scoring_result else 0,
+                    final_score=scoring_result['final_score'] if scoring_result else 100,
+                    base_score=scoring_result['base_score'] if scoring_result else 100,
+                    penalty_score=scoring_result['penalty_score'] if scoring_result else 0,
                     intent_match_score=intent_match_score,
-                    rule_hits=scoring_result.rule_hits if scoring_result else []
+                    rule_hits=scoring_result['rule_hits'] if scoring_result else []
                 )
                 
                 # 추천 사유 생성
@@ -178,10 +178,7 @@ class RankingService:
             self._ranking_count += 1
             self._total_ranking_time += ranking_time
             
-            logger.info(
-                f"제품 정렬 완료: {len(valid_products)}개 제품 정렬 "
-                f"({ranking_time:.2f}ms)"
-            )
+            # 제품 정렬 완료
             
             return sorted_products
             
@@ -496,7 +493,7 @@ class RankingService:
     
     def clear_cache(self):
         """캐시 초기화 (현재는 캐시 없음)"""
-        logger.info("정렬 서비스 캐시 초기화 (캐시 없음)")
+        # 정렬 서비스 캐시 초기화
     
     def close(self):
         """리소스 정리"""
@@ -504,9 +501,9 @@ class RankingService:
             # 성능 통계 로깅
             if self._ranking_count > 0:
                 avg_time = self._total_ranking_time / self._ranking_count
-                logger.info(f"RankingService 종료 - 총 {self._ranking_count}회 정렬, 평균 {avg_time:.2f}ms")
+                # RankingService 종료 통계
             
         except Exception as e:
             logger.error(f"RankingService 리소스 정리 오류: {e}")
         
-        logger.info("RankingService 종료 완료")
+        # RankingService 종료 완료

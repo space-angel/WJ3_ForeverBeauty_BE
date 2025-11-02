@@ -1,11 +1,11 @@
 """
 성분 조회 서비스
-SQLite cosmetics.db에서 성분 정보 및 제품-성분 관계 조회
+PostgreSQL에서 성분 정보 및 제품-성분 관계 조회
 추천 시스템용 canonical tags 추출 및 정규화
 """
 from typing import List, Dict, Optional, Any, Set, Tuple
-from app.database.sqlite_db import get_sqlite_db
-from app.models.sqlite_models import Ingredient, ProductIngredient, ProductWithIngredients, Product
+from app.database.postgres_db import get_postgres_db
+from app.models.postgres_models import Ingredient, ProductIngredient, ProductWithIngredients, Product
 import logging
 import json
 
@@ -15,7 +15,7 @@ class IngredientService:
     """성분 조회 서비스"""
     
     def __init__(self):
-        self.db = get_sqlite_db()
+        self.db = get_postgres_db()
     
     def get_ingredient_by_id(self, ingredient_id: int) -> Optional[Ingredient]:
         """성분 ID로 단일 성분 조회"""

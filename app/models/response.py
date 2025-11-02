@@ -92,7 +92,7 @@ class RulesetHealth(BaseModel):
     scoring_rules: int
     expired_rules: int
     total_aliases: int
-    sqlite_status: str
+    # sqlite_status 제거됨 - PostgreSQL 단일 DB 사용
     postgres_status: str
     avg_response_time_ms: Optional[float] = None
     error_rate_percent: Optional[float] = None

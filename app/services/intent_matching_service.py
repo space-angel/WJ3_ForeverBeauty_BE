@@ -106,7 +106,7 @@ class AdvancedIntentMatcher:
         self.document_corpus = []
         self.idf_scores = {}
         
-        logger.info("AdvancedIntentMatcher 초기화 완료")
+        # AdvancedIntentMatcher 초기화 완료
     
     def build_corpus(self, products: List) -> None:
         """제품 데이터로부터 TF-IDF 코퍼스 구축"""
@@ -148,7 +148,7 @@ class AdvancedIntentMatcher:
             doc_freq = sum(1 for doc in self.document_corpus if term in doc)
             self.idf_scores[term] = math.log(total_docs / (doc_freq + 1))
         
-        logger.info(f"TF-IDF 코퍼스 구축 완료: {total_docs}개 문서, {len(all_terms)}개 용어")
+        # TF-IDF 코퍼스 구축 완료
     
     def calculate_intent_match_score(
         self, 

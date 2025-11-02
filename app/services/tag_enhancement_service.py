@@ -9,7 +9,7 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass
 import logging
 
-from app.database.sqlite_db import get_sqlite_db
+from app.database.postgres_db import get_postgres_db
 from app.services.ingredient_service import IngredientService
 
 logger = logging.getLogger(__name__)
@@ -29,7 +29,7 @@ class TagEnhancementService:
     
     def __init__(self):
         """초기화"""
-        self.db = get_sqlite_db()
+        self.db = get_postgres_db()
         self.ingredient_service = IngredientService()
         
         # 1. 표준 태그 사전 (계층적 구조)

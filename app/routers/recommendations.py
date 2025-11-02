@@ -35,7 +35,7 @@ async def get_cosmetic_recommendations(
     
     파이프라인:
     1. 입력 검증 및 정제
-    2. 후보 제품 조회 (SQLite)
+    2. 후보 제품 조회 (PostgreSQL)
     3. 배제 평가 (eligibility rules)
     4. 감점 평가 (scoring rules)  
     5. 정렬 및 순위 결정
@@ -325,12 +325,12 @@ async def get_recommendation_health():
         
         # 데이터베이스 연결 상태
         try:
-            # SQLite 연결 테스트
-            product_count = product_service.get_total_product_count()
-            health_data["sqlite_status"] = "connected"
+            # PostgreSQL 연결 테스트
+            product_count = await product_service.get_total_product_count()
+            health_data["postgres_status"] = "connected"
             health_data["total_products"] = product_count
         except Exception as e:
-            health_data["sqlite_status"] = f"error: {str(e)}"
+            health_data["postgres_status"] = f"error: {str(e)}"
             health_data["status"] = "degraded"
         
         try:

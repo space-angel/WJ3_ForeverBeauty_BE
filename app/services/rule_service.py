@@ -30,7 +30,7 @@ class RuleService:
                 from app.database.postgres_db import get_db_session_sync
                 self.session = get_db_session_sync()
                 self.use_postgres = True
-                logger.info("PostgreSQL 연결 성공")
+                # PostgreSQL 연결 성공
             except Exception as e:
                 logger.warning(f"PostgreSQL 연결 실패, JSON 파일 사용: {e}")
                 self.use_postgres = False
@@ -51,7 +51,7 @@ class RuleService:
             # 초기 룰 로딩
             self._load_initial_rules()
             
-            logger.info("RuleService 초기화 완료")
+            # RuleService 초기화 완료
             
         except Exception as e:
             logger.error(f"RuleService 초기화 실패: {e}")
@@ -68,51 +68,101 @@ class RuleService:
             'MULTI:ANTICOAG': ['B01AA03', 'B01AB01', 'B01AC04'],  # 항응고제
             'MULTI:HTN': ['C09AA01', 'C08CA01', 'C03AA03'],       # 고혈압약
             'MULTI:DM': ['A10BA02', 'A10BB01', 'A10BF01'],        # 당뇨약
-            'MULTI:STEROID': ['H02AB02', 'H02AB04', 'H02AB06']    # 스테로이드
+            'MULTI:STEROID': ['H02AB02', 'H02AB04', 'H02AB06'],   # 스테로이드
+            'H02AB': ['H02AB02', 'H02AB04', 'H02AB06', 'H02AB'],  # 스테로이드 (직접 코드)
+            'A10': ['A10BA02', 'A10BB01', 'A10BF01', 'A10'],      # 당뇨약 (직접 코드)
+            'H03AA': ['H03AA01', 'H03AA02'],                      # 갑상선 저하약
+            'MULTI:PREG_LACT': ['PREG', 'LACT'],                 # 임신/수유 (특수 코드)
+            # 새로운 배제 룰용 의약품 코드
+            'B01AA03': ['B01AA03'],                               # 와파린 (직접 코드)
+            'B01AC': ['B01AC04', 'B01AC05', 'B01AC06'],          # 항혈소판제
+            'L04': ['L04AA01', 'L04AA02', 'L04AB01'],            # 면역억제제
+            'ANY-PHOTOSENS': ['PHOTOSENS']                        # 광과민성 약물 (특수 코드)
         }
         
-        logger.info(f"의약품 별칭 {len(aliases)}개 로딩 완료")
+        # 의약품 별칭 로딩 완료
         return aliases
     
     def _load_initial_rules(self):
         """초기 룰 로딩"""
         try:
-            if self.use_postgres:
-                # PostgreSQL에서 로딩
-                self._load_rules_from_postgres()
-            else:
-                # JSON 파일에서 로딩
-                self._load_rules_from_json()
+            # 현재는 JSON 파일만 사용 (PostgreSQL 룰 로딩은 이벤트 루프 문제로 비활성화)
+            self._load_rules_from_json()
         except Exception as e:
             logger.error(f"초기 룰 로딩 실패: {e}")
-            # 기본 룰 생성
+            # 모든 방법이 실패하면 기본 룰 생성
             self._create_default_rules()
     
     def _load_rules_from_postgres(self):
         """PostgreSQL에서 룰 로딩"""
-        session = None
         try:
             from app.models.postgres_models import Rule
-            from app.database.postgres_db import get_db_session_sync
+            from app.database.postgres_db import get_postgres_db
+            import asyncio
             
-            # 새로운 세션 생성 (기존 세션 문제 회피)
-            session = get_db_session_sync()
+            # 비동기 함수를 동기적으로 실행
+            async def load_rules_async():
+                db = get_postgres_db()
+                
+                # 배제 룰 쿼리
+                eligibility_query = """
+                    SELECT rule_id, rule_type, medication_codes, ingredient_tag, 
+                           conditions, action, penalty_score, reason, is_active,
+                           created_at, updated_at
+                    FROM rules 
+                    WHERE rule_type = 'eligibility' AND is_active = true
+                """
+                eligibility_rows = await db.execute_query(eligibility_query)
+                
+                # 감점 룰 쿼리
+                scoring_query = """
+                    SELECT rule_id, rule_type, medication_codes, ingredient_tag, 
+                           conditions, action, penalty_score, reason, is_active,
+                           created_at, updated_at
+                    FROM rules 
+                    WHERE rule_type = 'scoring' AND is_active = true
+                """
+                scoring_rows = await db.execute_query(scoring_query)
+                
+                return eligibility_rows, scoring_rows
             
-            # 배제 룰
-            eligibility_rules = session.query(Rule).filter(
-                Rule.rule_type == 'eligibility',
-                Rule.active == True
-            ).all()
+            # 이벤트 루프에서 실행
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    # 이미 실행 중인 루프가 있으면 새 스레드에서 실행
+                    import concurrent.futures
+                    import threading
+                    
+                    def run_in_thread():
+                        new_loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(new_loop)
+                        try:
+                            return new_loop.run_until_complete(load_rules_async())
+                        finally:
+                            new_loop.close()
+                    
+                    with concurrent.futures.ThreadPoolExecutor() as executor:
+                        future = executor.submit(run_in_thread)
+                        eligibility_rows, scoring_rows = future.result()
+                else:
+                    eligibility_rows, scoring_rows = loop.run_until_complete(load_rules_async())
+            except RuntimeError:
+                # 이벤트 루프가 없으면 새로 생성
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    eligibility_rows, scoring_rows = loop.run_until_complete(load_rules_async())
+                finally:
+                    loop.close()
+            
+            # Rule 객체로 변환
+            eligibility_rules = [Rule.from_db_row(row) for row in eligibility_rows]
+            scoring_rules = [Rule.from_db_row(row) for row in scoring_rows]
             
             self._eligibility_rules_cache = [
                 self._convert_rule_to_dict(rule) for rule in eligibility_rules
             ]
-            
-            # 감점 룰
-            scoring_rules = session.query(Rule).filter(
-                Rule.rule_type == 'scoring',
-                Rule.active == True
-            ).all()
             
             self._scoring_rules_cache = [
                 self._convert_rule_to_dict(rule) for rule in scoring_rules
@@ -120,16 +170,24 @@ class RuleService:
             
             self._cache_timestamp = datetime.now()
             
-            logger.info(f"PostgreSQL 룰 로딩 완료: 배제 {len(self._eligibility_rules_cache)}개, "
-                       f"감점 {len(self._scoring_rules_cache)}개")
+            # PostgreSQL 룰 로딩 완료
             
         except Exception as e:
             logger.error(f"PostgreSQL 룰 로딩 오류: {e}")
             raise
         finally:
-            # 세션 정리
+            # 세션 정리 (비동기 함수를 동기적으로 실행)
             if session:
-                session.close()
+                try:
+                    import asyncio
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        # 이미 실행 중인 루프가 있으면 스케줄링
+                        asyncio.create_task(session.close())
+                    else:
+                        loop.run_until_complete(session.close())
+                except Exception as e:
+                    logger.warning(f"세션 종료 중 오류 (무시됨): {e}")
     
     def _load_rules_from_json(self):
         """JSON 파일에서 룰 로딩"""
@@ -162,8 +220,7 @@ class RuleService:
             
             self._cache_timestamp = datetime.now()
             
-            logger.info(f"JSON 룰 로딩 완료: 배제 {len(self._eligibility_rules_cache)}개, "
-                       f"감점 {len(self._scoring_rules_cache)}개")
+            # JSON 룰 로딩 완료
             
         except Exception as e:
             logger.error(f"JSON 룰 로딩 오류: {e}")
@@ -274,21 +331,21 @@ class RuleService:
         
         self._cache_timestamp = datetime.now()
         
-        logger.info("기본 룰 생성 완료")
+        # 기본 룰 생성 완료
     
     def _convert_rule_to_dict(self, rule) -> Dict[str, Any]:
         """룰 객체를 딕셔너리로 변환"""
         return {
             'rule_id': rule.rule_id,
             'rule_type': rule.rule_type,
-            'med_code': rule.med_code,
+            'med_code': rule.medication_codes,  # PostgreSQL 모델은 medication_codes 리스트
             'ingredient_tag': rule.ingredient_tag,
-            'condition_json': rule.condition_json if rule.condition_json else {},
+            'condition_json': rule.conditions if rule.conditions else {},
             'action': rule.action,
-            'weight': rule.weight,
-            'severity': getattr(rule, 'severity', 'medium'),
-            'rationale_ko': rule.rationale_ko,
-            'citation_url': rule.citation_url if rule.citation_url else []
+            'weight': rule.penalty_score if rule.penalty_score else 1.0,
+            'severity': 'medium',  # 기본값
+            'rationale_ko': rule.reason if rule.reason else '',
+            'citation_url': []  # 기본값
         }
     
     def get_rule_statistics(self) -> Dict[str, Any]:
@@ -425,7 +482,7 @@ class RuleService:
     
     def evaluate_condition_json(self, condition_json: Dict[str, Any], context: Dict[str, Any]) -> bool:
         """
-        조건 JSON 평가 (AND 방식)
+        조건 JSON 평가 (AND 방식) - 중첩 딕셔너리 지원
         
         모든 조건이 만족되어야 True 반환
         """
@@ -433,28 +490,47 @@ class RuleService:
             return True  # 조건이 없으면 항상 적용
         
         try:
-            for key, expected_value in condition_json.items():
-                context_value = context.get(key)
-                
-                # 타입별 비교
-                if isinstance(expected_value, bool):
-                    if bool(context_value) != expected_value:
-                        return False
-                elif isinstance(expected_value, (int, float)):
-                    if context_value != expected_value:
-                        return False
-                elif isinstance(expected_value, str):
-                    if str(context_value) != expected_value:
-                        return False
-                else:
-                    if context_value != expected_value:
-                        return False
-            
-            return True
+            return self._evaluate_nested_condition(condition_json, context)
             
         except Exception as e:
             logger.error(f"조건 JSON 평가 오류: {e}")
             return False  # 오류 시 안전하게 False 반환
+    
+    def _evaluate_nested_condition(self, expected: Any, actual: Any) -> bool:
+        """중첩된 조건 평가"""
+        if isinstance(expected, dict) and isinstance(actual, dict):
+            # 딕셔너리인 경우 모든 키-값 쌍이 일치해야 함
+            for key, expected_value in expected.items():
+                if key not in actual:
+                    return False
+                
+                if not self._evaluate_nested_condition(expected_value, actual[key]):
+                    return False
+            
+            return True
+            
+        elif isinstance(expected, list) and isinstance(actual, list):
+            # 리스트인 경우 expected의 모든 요소가 actual에 포함되어야 함
+            for expected_item in expected:
+                if expected_item not in actual:
+                    return False
+            return True
+            
+        elif isinstance(expected, bool):
+            return bool(actual) == expected
+            
+        elif isinstance(expected, (int, float)):
+            try:
+                return float(actual) == float(expected)
+            except (ValueError, TypeError):
+                return False
+                
+        elif isinstance(expected, str):
+            return str(actual) == expected
+            
+        else:
+            # 기타 타입은 직접 비교
+            return actual == expected
     
     def validate_ruleset_integrity(self) -> Dict[str, Any]:
         """룰셋 무결성 검증"""
@@ -548,14 +624,20 @@ class RuleService:
         self._eligibility_rules_cache = None
         self._scoring_rules_cache = None
         self._cache_timestamp = None
-        logger.info("룰 서비스 캐시 초기화")
+        # 룰 서비스 캐시 초기화
     
     def close_session(self):
         """세션 종료"""
         if self.session:
             try:
-                self.session.close()
-                logger.info("PostgreSQL 세션 종료")
+                import asyncio
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    # 이미 실행 중인 루프가 있으면 스케줄링
+                    asyncio.create_task(self.session.close())
+                else:
+                    loop.run_until_complete(self.session.close())
+                # PostgreSQL 세션 종료
             except Exception as e:
                 logger.error(f"세션 종료 오류: {e}")
             finally:

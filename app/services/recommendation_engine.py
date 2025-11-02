@@ -10,11 +10,11 @@ import logging
 
 from app.models.request import RecommendationRequest
 from app.models.response import RecommendationResponse, ExecutionSummary, PipelineStatistics, RecommendationItem
-from app.models.sqlite_models import Product
+from app.models.postgres_models import Product
 from app.services.product_service import ProductService
 from app.services.intent_matching_service import AdvancedIntentMatcher
 from app.services.eligibility_engine import EligibilityEngine
-from app.services.scoring_engine import ScoringEngine
+from app.services.scoring_engine import ScoreCalculator
 from app.services.ranking_service import RankingService
 
 logger = logging.getLogger(__name__)
@@ -37,10 +37,10 @@ class RecommendationEngine:
         self.product_service = ProductService()
         self.intent_matcher = AdvancedIntentMatcher()
         self.eligibility_engine = EligibilityEngine()
-        self.scoring_engine = ScoringEngine()
+        self.scoring_engine = ScoreCalculator()
         self.ranking_service = RankingService()
         
-        logger.info("RecommendationEngine 초기화 완료")
+        # RecommendationEngine 초기화 완료
     
     async def recommend(self, request: RecommendationRequest) -> RecommendationResponse:
         """메인 추천 실행"""
@@ -48,7 +48,7 @@ class RecommendationEngine:
         request_id = uuid4()
         
         try:
-            logger.info(f"추천 요청 시작: {request_id}")
+            # 추천 요청 시작
             
             # 1. 파이프라인 실행
             pipeline_result = await self._execute_pipeline(request, request_id)
@@ -58,7 +58,7 @@ class RecommendationEngine:
                 request, request_id, pipeline_result, start_time
             )
             
-            logger.info(f"추천 완료: {request_id} ({len(response.recommendations)}개)")
+            # 추천 완료
             return response
             
         except Exception as e:
@@ -76,12 +76,23 @@ class RecommendationEngine:
         self._preprocess_request(request)
         
         # 1단계: 후보 제품 조회
-        candidates = self.product_service.get_candidate_products(
+        candidates = await self.product_service.get_candidate_products(
             request, limit=1000
         )
         
         if not candidates:
-            raise ValueError("후보 제품이 없습니다")
+            # 카테고리 필터 없이 재시도
+            logger.warning("카테고리 필터링된 후보 제품 없음 - 전체 제품에서 재시도")
+            request_copy = request.model_copy() if hasattr(request, 'model_copy') else request
+            if hasattr(request_copy, 'categories'):
+                request_copy.categories = None
+            
+            candidates = await self.product_service.get_candidate_products(
+                request_copy, limit=500
+            )
+            
+            if not candidates:
+                raise ValueError("후보 제품이 없습니다 - 데이터베이스 연결 또는 데이터 문제")
         
         # 2단계: 안전성 평가 (배제)
         eligibility_result = self.eligibility_engine.evaluate_products(
@@ -147,7 +158,7 @@ class RecommendationEngine:
         
         # 감점 통계 계산
         penalized_count = len(pipeline.scored_products) if pipeline.scored_products else 0
-        total_scoring_rules = sum(len(result.rule_hits) for result in pipeline.scored_products.values()) if pipeline.scored_products else 0
+        total_scoring_rules = sum(len(result['rule_hits']) for result in pipeline.scored_products.values()) if pipeline.scored_products else 0
         
         # 파이프라인 통계
         pipeline_stats = PipelineStatistics(
@@ -211,7 +222,7 @@ class RecommendationEngine:
             # med_profile 생성
             request.med_profile = MedProfile(codes=med_codes)
             
-            logger.info(f"의약품 코드 변환: {len(med_codes)}개 - {med_codes}")
+            # 의약품 코드 변환 완료
     
     def _build_error_response(
         self,

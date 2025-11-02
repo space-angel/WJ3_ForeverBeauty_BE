@@ -8,8 +8,8 @@ import logging
 
 from app.models.response import HealthResponse, RulesetHealth
 from app.services.rule_service import RuleService
-from app.database.sqlite_db import get_sqlite_db
-from app.database.postgres_db import check_database_health
+# SQLite 의존성 제거됨
+from app.database.postgres_db import get_postgres_db
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +18,8 @@ class HealthService:
     
     def __init__(self):
         self.rule_service = RuleService()
-        self.sqlite_db = get_sqlite_db()
+        # SQLite 의존성 제거됨
+        self.postgres_db = get_postgres_db()
     
     async def check_recommendation_health(self, include_stats: bool = False) -> HealthResponse:
         """추천 시스템 헬스체크"""
@@ -46,11 +47,10 @@ class HealthService:
         # 룰 통계 조회
         rule_stats = self.rule_service.get_rule_statistics()
         
-        # 데이터베이스 상태 확인
-        sqlite_status = "connected" if self.sqlite_db.test_connection() else "disconnected"
+        # PostgreSQL 상태 확인
         
-        postgres_info = check_database_health()
-        postgres_status = postgres_info.get('status', 'disconnected')
+        postgres_health = await self.postgres_db.get_health_status()
+        postgres_status = postgres_health.get('status', 'disconnected')
         
         # 성능 통계 (옵션)
         avg_response_time = None
@@ -69,7 +69,6 @@ class HealthService:
             scoring_rules=rule_stats.get('scoring_rules', 0),
             expired_rules=0,  # TODO: 만료된 룰 계산
             total_aliases=120,  # TODO: 실제 별칭 수 계산
-            sqlite_status=sqlite_status,
             postgres_status=postgres_status,
             avg_response_time_ms=avg_response_time,
             error_rate_percent=error_rate,
@@ -93,7 +92,7 @@ class HealthService:
         
         # 기본 조건들
         conditions = [
-            ruleset_health.sqlite_status == "connected",
+            ruleset_health.postgres_status == "healthy",
             ruleset_health.active_rules > 0,
             ruleset_health.total_rules > 0
         ]
@@ -118,7 +117,6 @@ class HealthService:
             scoring_rules=0,
             expired_rules=0,
             total_aliases=0,
-            sqlite_status="error",
             postgres_status="error",
             avg_response_time_ms=None,
             error_rate_percent=None,
@@ -136,19 +134,12 @@ class HealthService:
         
         results = {}
         
-        # SQLite 확인
-        try:
-            if self.sqlite_db.test_connection():
-                results['sqlite'] = "connected"
-            else:
-                results['sqlite'] = "disconnected"
-        except Exception as e:
-            results['sqlite'] = f"error: {str(e)}"
+        # PostgreSQL 확인 (이미 아래에 있음)
         
         # PostgreSQL 확인
         try:
-            postgres_info = check_database_health()
-            results['postgres'] = postgres_info.get('status', 'unknown')
+            postgres_health = await self.postgres_db.get_health_status()
+            results['postgres'] = postgres_health.get('status', 'unknown')
         except Exception as e:
             results['postgres'] = f"error: {str(e)}"
         

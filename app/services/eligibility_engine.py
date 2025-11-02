@@ -13,7 +13,7 @@ from datetime import datetime
 from app.services.rule_service import RuleService
 from app.services.ingredient_service import IngredientService
 from app.models.request import RecommendationRequest
-from app.models.sqlite_models import Product
+from app.models.postgres_models import Product
 from app.models.response import RuleHit
 
 logger = logging.getLogger(__name__)
@@ -61,7 +61,7 @@ class EligibilityEngine:
             self._evaluation_count = 0
             self._total_evaluation_time = 0.0
             
-            logger.info("EligibilityEngine 초기화 완료")
+            # EligibilityEngine 초기화 완료
             
         except Exception as e:
             logger.error(f"EligibilityEngine 초기화 실패: {e}")
@@ -92,7 +92,7 @@ class EligibilityEngine:
             self._eligibility_rules_cache = validated_rules
             self._cache_timestamp = current_time
             
-            logger.info(f"배제 룰 로딩 완료: {len(validated_rules)}개 룰")
+            # 배제 룰 로딩 완료
             return validated_rules
             
         except Exception as e:
@@ -202,12 +202,19 @@ class EligibilityEngine:
                 for rule in applicable_rules:
                     if self._evaluate_rule_conditions(rule, use_context):
                         # 배제 조건 만족 - 제품 배제
+                        # citation_url을 리스트로 변환
+                        citation_url = rule.get('citation_url', [])
+                        if isinstance(citation_url, str):
+                            citation_url = [citation_url] if citation_url else []
+                        elif citation_url is None:
+                            citation_url = []
+                        
                         rule_hit = RuleHit(
                             type='exclude',
                             rule_id=rule['rule_id'],
                             weight=rule.get('weight', 0),
                             rationale_ko=rule.get('rationale_ko', '안전성 우려'),
-                            citation_url=rule.get('citation_url')
+                            citation_url=citation_url
                         )
                         
                         reason = self._generate_exclusion_reason(rule, request)
@@ -224,10 +231,7 @@ class EligibilityEngine:
             self._evaluation_count += 1
             self._total_evaluation_time += evaluation_time
             
-            logger.info(
-                f"배제 평가 완료: {result.total_evaluated}개 중 {result.total_excluded}개 배제 "
-                f"({evaluation_time:.2f}ms, {result.rules_applied}개 룰 적용)"
-            )
+            # 배제 평가 완료
             
             return result
             
@@ -240,7 +244,7 @@ class EligibilityEngine:
                     rule_id='SYSTEM_ERROR',
                     weight=1000,
                     rationale_ko=f'시스템 오류로 인한 안전 배제: {str(e)}',
-                    citation_url=None
+                    citation_url=[]
                 )
                 result.add_exclusion(product.product_id, rule_hit, '시스템 오류')
             
@@ -251,6 +255,33 @@ class EligibilityEngine:
         """요청에서 사용 맥락 추출"""
         context = {}
         
+        # 사용자 프로필 정보 추출 (가장 중요!)
+        if request.user_profile:
+            user_profile = {}
+            
+            # Enum 값들을 문자열로 변환
+            if hasattr(request.user_profile, 'skin_type') and request.user_profile.skin_type:
+                user_profile['skin_type'] = str(request.user_profile.skin_type.value) if hasattr(request.user_profile.skin_type, 'value') else str(request.user_profile.skin_type)
+            
+            if hasattr(request.user_profile, 'age_group') and request.user_profile.age_group:
+                user_profile['age_group'] = str(request.user_profile.age_group.value) if hasattr(request.user_profile.age_group, 'value') else str(request.user_profile.age_group)
+            
+            if hasattr(request.user_profile, 'gender') and request.user_profile.gender:
+                user_profile['gender'] = str(request.user_profile.gender.value) if hasattr(request.user_profile.gender, 'value') else str(request.user_profile.gender)
+            
+            if hasattr(request.user_profile, 'allergies') and request.user_profile.allergies:
+                user_profile['allergies'] = list(request.user_profile.allergies)
+            
+            if hasattr(request.user_profile, 'skin_concerns') and request.user_profile.skin_concerns:
+                user_profile['skin_concerns'] = list(request.user_profile.skin_concerns)
+            
+            # 임신/수유 정보 (med_profile에서도 확인)
+            if hasattr(request.user_profile, 'pregnancy') and request.user_profile.pregnancy is not None:
+                user_profile['pregnancy'] = bool(request.user_profile.pregnancy)
+            
+            context['user_profile'] = user_profile
+        
+        # 사용 맥락 정보 (기본값 설정)
         if request.use_context:
             context.update({
                 'leave_on': request.use_context.leave_on,
@@ -258,11 +289,24 @@ class EligibilityEngine:
                 'face': request.use_context.face,
                 'large_area_hint': request.use_context.large_area_hint
             })
+        else:
+            # 사용 맥락이 없을 때 기본값 (보수적으로 true 설정)
+            context.update({
+                'leave_on': True,      # 대부분 화장품은 leave-on
+                'day_use': True,       # 주간 사용 가정
+                'face': True,          # 얼굴 사용 가정
+                'large_area_hint': True  # 넓은 부위 사용 가정
+            })
         
+        # 의약품 프로필 정보
         if request.med_profile:
             context.update({
                 'preg_lact': request.med_profile.preg_lact
             })
+            
+            # 임신/수유 정보를 user_profile에도 추가
+            if request.med_profile.preg_lact and 'user_profile' in context:
+                context['user_profile']['pregnancy'] = True
         
         return context
     
@@ -389,7 +433,7 @@ class EligibilityEngine:
         """캐시 초기화"""
         self._eligibility_rules_cache = None
         self._cache_timestamp = None
-        logger.info("배제 엔진 캐시 초기화")
+        # 배제 엔진 캐시 초기화
     
     def close(self):
         """리소스 정리"""
@@ -400,9 +444,9 @@ class EligibilityEngine:
             # 성능 통계 로깅
             if self._evaluation_count > 0:
                 avg_time = self._total_evaluation_time / self._evaluation_count
-                logger.info(f"EligibilityEngine 종료 - 총 {self._evaluation_count}회 평가, 평균 {avg_time:.2f}ms")
+                # EligibilityEngine 종료 통계
             
         except Exception as e:
             logger.error(f"EligibilityEngine 리소스 정리 오류: {e}")
         
-        logger.info("EligibilityEngine 종료 완료")
+        # EligibilityEngine 종료 완료
