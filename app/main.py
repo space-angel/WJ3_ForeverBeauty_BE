@@ -435,6 +435,55 @@ async def health():
         "uptime": "running"
     }
 
+@app.get(
+    "/debug/db-status",
+    summary="데이터베이스 상태 디버그",
+    description="데이터베이스 연결 및 데이터 상태를 확인합니다."
+)
+async def debug_db_status():
+    """데이터베이스 상태 디버그"""
+    try:
+        from app.database.postgres_sync import get_postgres_sync_db
+        from app.services.product_service import ProductService
+        
+        sync_db = get_postgres_sync_db()
+        product_service = ProductService()
+        
+        # 데이터베이스 연결 테스트
+        db_connected = sync_db.test_connection()
+        
+        # 제품 테이블 확인
+        products_count = 0
+        sample_products = []
+        
+        if db_connected:
+            try:
+                # 제품 수 조회
+                count_result = sync_db._execute_sync("SELECT COUNT(*) as count FROM products")
+                products_count = count_result[0]['count'] if count_result else 0
+                
+                # 샘플 제품 조회
+                sample_result = sync_db._execute_sync("SELECT product_id, name, brand_name, category_name FROM products LIMIT 3")
+                sample_products = sample_result
+                
+            except Exception as e:
+                logger.error(f"제품 테이블 조회 오류: {e}")
+        
+        return {
+            "database_url_exists": bool(sync_db.database_url),
+            "database_connected": db_connected,
+            "products_count": products_count,
+            "sample_products": sample_products,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"데이터베이스 상태 확인 오류: {e}")
+        return {
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
+        }
+
 if __name__ == "__main__":
     import uvicorn
     

@@ -28,7 +28,12 @@ class PostgreSQLSyncDB:
         """
         self.database_url = database_url or os.getenv('DATABASE_URL')
         if not self.database_url:
-            raise ValueError("DATABASE_URL 환경변수가 설정되지 않았습니다.")
+            logger.warning("DATABASE_URL 환경변수가 설정되지 않았습니다. 데이터베이스 연결을 건너뜁니다.")
+            self._pool = None
+            self._connection_config = {}
+            self._executor = ThreadPoolExecutor(max_workers=5)
+            self._lock = threading.Lock()
+            return
         
         self._pool: Optional[psycopg2.pool.ThreadedConnectionPool] = None
         self._connection_config = self._parse_database_url()
@@ -55,6 +60,9 @@ class PostgreSQLSyncDB:
     
     def create_pool(self, min_conn: int = 1, max_conn: int = 3) -> psycopg2.pool.ThreadedConnectionPool:
         """연결 풀 생성"""
+        if not self.database_url:
+            raise ValueError("DATABASE_URL이 설정되지 않아 연결 풀을 생성할 수 없습니다.")
+            
         with self._lock:
             if self._pool and not self._pool.closed:
                 return self._pool
@@ -170,6 +178,10 @@ class PostgreSQLSyncDB:
     
     def test_connection(self) -> bool:
         """데이터베이스 연결 테스트"""
+        if not self.database_url:
+            logger.warning("DATABASE_URL이 없어 연결 테스트를 건너뜁니다.")
+            return False
+            
         try:
             result = self._execute_sync("SELECT 1")
             return len(result) > 0 and result[0].get('?column?') == 1
@@ -192,6 +204,11 @@ def get_postgres_sync_db() -> PostgreSQLSyncDB:
 async def init_sync_database():
     """동기 데이터베이스 초기화"""
     db = get_postgres_sync_db()
+    
+    # DATABASE_URL이 없으면 초기화 건너뛰기
+    if not db.database_url:
+        logger.warning("DATABASE_URL이 없어 동기 데이터베이스 초기화를 건너뜁니다.")
+        return
     
     try:
         logger.info("PostgreSQL 동기 데이터베이스 초기화 시작")
