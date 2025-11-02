@@ -105,9 +105,11 @@ class RecommendationEngine:
         ]
         
         # 3단계: 적합성 평가 (감점)
+        logger.info(f"🎯 3단계: {len(safe_products)}개 제품 스코어링 시작")
         scoring_results = self.scoring_engine.evaluate_products(
             safe_products, request, request_id
         )
+        logger.info(f"✅ 3단계 완료: 스코어링 결과 {len(scoring_results)}개")
         
         # 4단계: 순위 결정
         ranked_products = self.ranking_service.rank_products(
@@ -159,6 +161,8 @@ class RecommendationEngine:
         # 감점 통계 계산
         penalized_count = len(pipeline.scored_products) if pipeline.scored_products else 0
         total_scoring_rules = sum(len(result['rule_hits']) for result in pipeline.scored_products.values()) if pipeline.scored_products else 0
+        
+        logger.info(f"📈 최종 통계: 감점된 제품 {penalized_count}개, 적용된 감점 룰 {total_scoring_rules}개")
         
         # 파이프라인 통계
         pipeline_stats = PipelineStatistics(

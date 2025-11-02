@@ -376,10 +376,12 @@ class ScoreCalculator:
     
     def evaluate_products(self, products: List[Product], request, request_id) -> Dict[int, Dict[str, Any]]:
         """제품 평가 (recommendation_engine 호환용) - 개인화 + 의약품 룰 적용"""
+        logger.info(f"🚀 스코어링 엔진 시작: {len(products)}개 제품 평가")
         results = {}
         
         # 의약품 기반 감점 룰 적용을 위한 준비
         rule_penalties = self._apply_medication_scoring_rules(products, request)
+        logger.info(f"💊 의약품 룰 적용 결과: {len(rule_penalties)}개 제품에 감점")
         
         for product in products:
             # 1. 기본 점수
@@ -423,6 +425,14 @@ class ScoreCalculator:
                 'medication_penalty': rule_penalties.get(product.product_id, {}).get('total_penalty', 0),
                 'rule_hits': rule_hits
             }
+            
+            # 상세 로그 (처음 3개 제품만)
+            if len(results) <= 3:
+                logger.info(f"📊 제품 {product.product_id} ({product.name[:20]}...): "
+                          f"최종점수={final_score:.1f}, 의도={intent_score:.1f}, "
+                          f"개인화={personalization_score:.1f}, 안전성감점={safety_penalty:.1f}, "
+                          f"의약품감점={rule_penalties.get(product.product_id, {}).get('total_penalty', 0):.1f}, "
+                          f"룰적용={len(rule_hits)}개")
         
         return results
     
@@ -539,10 +549,12 @@ class ScoreCalculator:
                     med_codes.extend(request.med_profile.codes)
             
             if not med_codes:
+                logger.info("💊 의약품 코드가 없어 감점 룰 적용 건너뜀")
                 return penalties
             
             # 감점 룰 조회
             scoring_rules = rule_service.get_cached_scoring_rules()
+            logger.info(f"📋 로드된 감점 룰 수: {len(scoring_rules)}")
             
             for product in products:
                 product_penalties = []
@@ -582,7 +594,14 @@ class ScoreCalculator:
                         'rule_hits': product_penalties
                     }
             
-            logger.info(f"감점 룰 적용 완료: {len(penalties)}개 제품에 감점 적용")
+            logger.info(f"🎯 감점 룰 적용 완료: {len(penalties)}개 제품에 감점 적용")
+            logger.info(f"📊 총 감점 룰 수: {len(scoring_rules)}, 의약품 코드: {med_codes}")
+            
+            # 상세 로그
+            for product_id, penalty_info in penalties.items():
+                logger.info(f"🔍 제품 {product_id}: 총 감점 {penalty_info['total_penalty']}, 적용 룰 {len(penalty_info['rule_hits'])}개")
+                for rule_hit in penalty_info['rule_hits']:
+                    logger.info(f"  ⚠️  룰 {rule_hit['rule_id']}: {rule_hit['med_code']} + {rule_hit['ingredient']} = -{rule_hit['penalty']}점")
             
         except Exception as e:
             logger.error(f"의약품 감점 룰 적용 실패: {e}")
