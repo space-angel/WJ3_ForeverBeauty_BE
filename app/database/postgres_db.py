@@ -1,9 +1,8 @@
 """
 PostgreSQL 데이터베이스 연결 관리
-asyncpg 기반 연결 풀 및 헬스체크 기능
+psycopg2 기반 연결 풀 및 헬스체크 기능 (asyncpg 대신 사용)
 """
 
-import asyncpg
 import asyncio
 import os
 import logging
@@ -14,7 +13,7 @@ from contextlib import asynccontextmanager
 logger = logging.getLogger(__name__)
 
 class PostgreSQLDB:
-    """PostgreSQL 데이터베이스 연결 클래스"""
+    """PostgreSQL 데이터베이스 연결 클래스 (postgres_sync 래퍼)"""
     
     def __init__(self, database_url: Optional[str] = None):
         """
@@ -23,130 +22,42 @@ class PostgreSQLDB:
         Args:
             database_url: PostgreSQL 연결 URL (환경변수에서 자동 로드)
         """
-        self.database_url = database_url or os.getenv('DATABASE_URL')
-        if not self.database_url:
-            raise ValueError("DATABASE_URL 환경변수가 설정되지 않았습니다.")
+        from app.database.postgres_sync import PostgreSQLSyncDB
+        self._sync_db = PostgreSQLSyncDB(database_url)
+        self.database_url = self._sync_db.database_url
+        self._closing = False
         
-        self._pool: Optional[asyncpg.Pool] = None
-        self._connection_config = self._parse_database_url()
-        self._pool_lock = None  # 나중에 초기화
-        self._closing = False  # 종료 상태 플래그
-        
-    def _parse_database_url(self) -> Dict[str, Any]:
-        """DATABASE_URL 파싱하여 연결 설정 추출"""
-        parsed = urlparse(self.database_url)
-        
-        config = {
-            'host': parsed.hostname,
-            'port': parsed.port or 5432,
-            'database': parsed.path.lstrip('/'),
-            'user': parsed.username,
-            'password': parsed.password,
-        }
-        
-        # 수퍼베이스 SSL 설정 최적화
-        if 'sslmode=require' in self.database_url or 'supabase.com' in self.database_url:
-            import ssl
-            ssl_context = ssl.create_default_context()
-            ssl_context.check_hostname = False
-            ssl_context.verify_mode = ssl.CERT_NONE
-            config['ssl'] = ssl_context
-        
-        return config
+    def is_supabase_connection(self) -> bool:
+        """수퍼베이스 연결인지 확인"""
+        return 'supabase.com' in self.database_url if self.database_url else False
     
-    async def create_pool(self, min_size: int = 1, max_size: int = 3) -> asyncpg.Pool:
-        """연결 풀 생성 - 단순화 및 안정성 강화"""
-        # 종료 중이면 풀 생성하지 않음
+    async def create_pool(self, min_size: int = 1, max_size: int = 3):
+        """연결 풀 생성 - postgres_sync 사용"""
         if self._closing:
             raise RuntimeError("데이터베이스가 종료 중입니다")
         
-        # 기존 풀이 있고 활성 상태면 그대로 반환
-        if self._pool and not self._pool._closed:
-            return self._pool
-        
-        # 기존 풀 정리
-        if self._pool is not None:
-            try:
-                self._pool.terminate()
-            except:
-                pass
-            self._pool = None
-        
-        # 수퍼베이스 최적화 설정
-        if self.is_supabase_connection():
-            min_size = 1
-            max_size = 1  # 단일 연결
-            connection_timeout = 15.0
-            command_timeout = 20.0
-            max_inactive_lifetime = 300.0  # 5분
-            max_queries = 1000
-        else:
-            connection_timeout = 10.0
-            command_timeout = 15.0
-            max_inactive_lifetime = 180.0
-            max_queries = 500
-        
         try:
             logger.info("PostgreSQL 연결 풀 생성 시작")
-            
-            # 단순한 풀 생성 (복잡한 설정 제거)
-            self._pool = await asyncio.wait_for(
-                asyncpg.create_pool(
-                    **self._connection_config,
-                    min_size=min_size,
-                    max_size=max_size,
-                    max_inactive_connection_lifetime=max_inactive_lifetime,
-                    max_queries=max_queries,
-                    command_timeout=command_timeout,
-                    server_settings={
-                        'application_name': 'cosmetic_api',
-                        'timezone': 'UTC'
-                    }
-                ),
-                timeout=connection_timeout
-            )
-            
-            # 간단한 연결 테스트
-            async with self._pool.acquire() as conn:
-                await conn.fetchval("SELECT 1")
-            
+            self._sync_db.create_pool(min_conn=min_size, max_conn=max_size)
             logger.info(f"PostgreSQL 연결 풀 생성 완료 (min={min_size}, max={max_size})")
-            return self._pool
-            
+            return self._sync_db._pool
         except Exception as e:
             logger.error(f"PostgreSQL 연결 풀 생성 실패: {e}")
-            if self._pool:
-                try:
-                    self._pool.terminate()
-                except:
-                    pass
-                self._pool = None
             raise
     
 
     
     async def close_pool(self):
-        """연결 풀 종료 - 단순화"""
+        """연결 풀 종료"""
         self._closing = True
-        
-        if not self._pool:
-            return
-        
         try:
-            logger.info("PostgreSQL 연결 풀 종료 시작")
-            self._pool.terminate()
-            logger.info("PostgreSQL 연결 풀 종료 완료")
+            self._sync_db.close_pool()
         except Exception as e:
             logger.debug(f"연결 풀 종료 중 오류 (무시됨): {e}")
-        finally:
-            self._pool = None
     
     def is_pool_active(self) -> bool:
         """연결 풀이 활성 상태인지 확인"""
-        try:
-            return self._pool is not None and not self._pool._closed
-        except:
-            return False
+        return self._sync_db.is_pool_active()
     
     def is_supabase_connection(self) -> bool:
         """수퍼베이스 연결인지 확인"""
@@ -206,28 +117,13 @@ class PostgreSQLDB:
                     logger.debug(f"연결 반환 중 오류 (무시됨): {e}")
     
     async def execute_query(self, query: str, *args) -> List[Dict[str, Any]]:
-        """쿼리 실행 및 결과 반환 - 단순화"""
-        try:
-            async with self.get_connection() as conn:
-                rows = await conn.fetch(query, *args)
-                return [dict(row) for row in rows]
-        except Exception as e:
-            logger.error(f"쿼리 실행 오류: {e}")
-            raise
+        """쿼리 실행 및 결과 반환"""
+        return await self._sync_db.execute_query(query, *args)
     
     async def execute_single(self, query: str, *args) -> Optional[Dict[str, Any]]:
         """단일 결과 쿼리 실행"""
-        # 연결 풀 상태 확인 및 재생성
-        if not self.is_pool_active():
-            await self.create_pool()
-        
-        async with self.get_connection() as conn:
-            try:
-                row = await conn.fetchrow(query, *args)
-                return dict(row) if row else None
-            except Exception as e:
-                logger.error(f"단일 쿼리 실행 오류: {e}")
-                raise
+        results = await self.execute_query(query, *args)
+        return results[0] if results else None
     
     async def execute_scalar(self, query: str, *args) -> Any:
         """스칼라 값 반환 쿼리 실행"""
@@ -262,13 +158,7 @@ class PostgreSQLDB:
     
     async def test_connection(self) -> bool:
         """데이터베이스 연결 테스트"""
-        try:
-            async with self.get_connection() as conn:
-                result = await conn.fetchval("SELECT 1")
-                return result == 1
-        except Exception as e:
-            logger.error(f"PostgreSQL 연결 테스트 실패: {e}")
-            return False
+        return self._sync_db.test_connection()
     
     async def get_health_status(self) -> Dict[str, Any]:
         """데이터베이스 헬스체크"""
