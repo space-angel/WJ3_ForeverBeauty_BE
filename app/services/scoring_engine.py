@@ -519,6 +519,215 @@ class ScoreCalculator:
         
         return min(score, 100.0)
     
+    def _apply_medication_scoring_rules(self, products: List[Product], request) -> Dict[int, Dict[str, Any]]:
+        """의약품 기반 감점 룰 적용"""
+        from app.services.rule_service import RuleService
+        
+        rule_service = RuleService()
+        penalties = {}
+        
+        try:
+            # 의약품 코드 추출
+            med_codes = []
+            if hasattr(request, 'medications') and request.medications:
+                for med in request.medications:
+                    if hasattr(med, 'active_ingredients'):
+                        med_codes.extend(med.active_ingredients)
+            
+            if hasattr(request, 'med_profile') and request.med_profile:
+                if hasattr(request.med_profile, 'codes'):
+                    med_codes.extend(request.med_profile.codes)
+            
+            if not med_codes:
+                return penalties
+            
+            # 감점 룰 조회
+            scoring_rules = rule_service.get_cached_scoring_rules()
+            
+            for product in products:
+                product_penalties = []
+                total_penalty = 0.0
+                
+                # 제품 성분 태그 추출
+                ingredient_tags = []
+                if product.tags:
+                    ingredient_tags = [tag.lower().strip() for tag in product.tags]
+                
+                # 각 룰에 대해 검사
+                for rule in scoring_rules:
+                    rule_applied = False
+                    
+                    # 의약품 코드 매칭
+                    if rule.get('med_code') and rule['med_code'] in med_codes:
+                        # 성분 태그 매칭
+                        rule_ingredient = rule.get('ingredient_tag', '').lower().strip()
+                        if rule_ingredient and rule_ingredient in ingredient_tags:
+                            # 조건 검사
+                            if self._check_rule_conditions(rule, request):
+                                penalty = rule.get('weight', 10)
+                                total_penalty += penalty
+                                
+                                product_penalties.append({
+                                    'rule_id': rule.get('rule_id', 'unknown'),
+                                    'penalty': penalty,
+                                    'reason': rule.get('rationale_ko', '의약품 상호작용 주의'),
+                                    'med_code': rule.get('med_code'),
+                                    'ingredient': rule_ingredient
+                                })
+                                rule_applied = True
+                
+                if product_penalties:
+                    penalties[product.product_id] = {
+                        'total_penalty': total_penalty,
+                        'rule_hits': product_penalties
+                    }
+            
+            logger.info(f"감점 룰 적용 완료: {len(penalties)}개 제품에 감점 적용")
+            
+        except Exception as e:
+            logger.error(f"의약품 감점 룰 적용 실패: {e}")
+        finally:
+            rule_service.close_session()
+        
+        return penalties
+    
+    def _check_rule_conditions(self, rule: Dict[str, Any], request) -> bool:
+        """룰 조건 검사"""
+        condition_json = rule.get('condition_json', {})
+        if not condition_json:
+            return True  # 조건이 없으면 항상 적용
+        
+        # 사용 맥락 검사
+        if hasattr(request, 'use_context') and request.use_context:
+            context = request.use_context
+            
+            # leave_on 조건
+            if 'leave_on' in condition_json:
+                if hasattr(context, 'leave_on') and context.leave_on != condition_json['leave_on']:
+                    return False
+            
+            # day_use 조건
+            if 'day_use' in condition_json:
+                if hasattr(context, 'day_use') and context.day_use != condition_json['day_use']:
+                    return False
+            
+            # face 조건
+            if 'face' in condition_json:
+                if hasattr(context, 'face') and context.face != condition_json['face']:
+                    return False
+        
+        # 임신/수유 조건
+        if 'preg_lact' in condition_json:
+            if hasattr(request, 'med_profile') and request.med_profile:
+                if hasattr(request.med_profile, 'preg_lact'):
+                    if request.med_profile.preg_lact != condition_json['preg_lact']:
+                        return False
+        
+        return True
+    
+    def _calculate_safety_penalty(self, product: Product, request) -> float:
+        """안전성 기반 감점 계산"""
+        penalty = 0.0
+        
+        try:
+            # 사용자 프로필 기반 안전성 검사
+            if hasattr(request, 'user_profile') and request.user_profile:
+                profile = request.user_profile
+                
+                # 알레르기 성분 검사
+                if hasattr(profile, 'allergies') and profile.allergies:
+                    product_tags = [tag.lower() for tag in (product.tags or [])]
+                    product_name = product.name.lower()
+                    
+                    for allergy in profile.allergies:
+                        allergy_lower = allergy.lower()
+                        
+                        # 제품 태그에서 알레르기 성분 검사
+                        for tag in product_tags:
+                            if allergy_lower in tag:
+                                penalty += 20.0  # 알레르기 성분 발견 시 큰 감점
+                                break
+                        
+                        # 제품명에서 알레르기 성분 검사
+                        if allergy_lower in product_name:
+                            penalty += 15.0
+                
+                # 피부타입별 부적합 성분 검사
+                if hasattr(profile, 'skin_type') and profile.skin_type:
+                    skin_penalty = self._get_skin_type_penalty(product, profile.skin_type)
+                    penalty += skin_penalty
+                
+                # 연령대별 부적합 성분 검사
+                if hasattr(profile, 'age_group') and profile.age_group:
+                    age_penalty = self._get_age_safety_penalty(product, profile.age_group)
+                    penalty += age_penalty
+            
+            # 제외 성분 검사
+            if hasattr(request, 'exclude_ingredients') and request.exclude_ingredients:
+                product_tags = [tag.lower() for tag in (product.tags or [])]
+                product_name = product.name.lower()
+                
+                for exclude_ingredient in request.exclude_ingredients:
+                    exclude_lower = exclude_ingredient.lower()
+                    
+                    for tag in product_tags:
+                        if exclude_lower in tag:
+                            penalty += 25.0  # 제외 성분 발견 시 큰 감점
+                            break
+                    
+                    if exclude_lower in product_name:
+                        penalty += 20.0
+        
+        except Exception as e:
+            logger.error(f"안전성 감점 계산 실패 (product_id: {product.product_id}): {e}")
+        
+        return min(penalty, 50.0)  # 최대 50점 감점
+    
+    def _get_skin_type_penalty(self, product: Product, skin_type: str) -> float:
+        """피부타입별 부적합 성분 감점"""
+        penalty = 0.0
+        product_tags = [tag.lower() for tag in (product.tags or [])]
+        
+        skin_avoid_keywords = {
+            'sensitive': ['alcohol', '알코올', 'fragrance', '향료', 'aha', 'bha', '자극'],
+            'dry': ['alcohol', '알코올', '수렴', 'astringent'],
+            'oily': ['heavy', '무거운', 'comedogenic', '코메도제닉'],
+            'combination': []  # 복합성은 특별한 제한 없음
+        }
+        
+        avoid_keywords = skin_avoid_keywords.get(skin_type, [])
+        
+        for keyword in avoid_keywords:
+            for tag in product_tags:
+                if keyword in tag:
+                    penalty += 5.0
+                    break
+        
+        return penalty
+    
+    def _get_age_safety_penalty(self, product: Product, age_group: str) -> float:
+        """연령대별 안전성 감점"""
+        penalty = 0.0
+        product_tags = [tag.lower() for tag in (product.tags or [])]
+        
+        age_avoid_keywords = {
+            '10s': ['retinol', '레티놀', 'aha', 'bha', '강한성분'],
+            '20s': ['고농도', 'high concentration'],
+            '30s': [],
+            '40s': [],
+            '50s': ['자극', 'irritating']
+        }
+        
+        avoid_keywords = age_avoid_keywords.get(age_group, [])
+        
+        for keyword in avoid_keywords:
+            for tag in product_tags:
+                if keyword in tag:
+                    penalty += 8.0
+                    break
+        
+        return penalty
+    
     def _get_age_compatibility_score(self, product: Product, age_group: str) -> float:
         """연령대 적합성 점수 (개선된 버전)"""
         product_tags = [tag.lower() for tag in (product.tags or [])]
