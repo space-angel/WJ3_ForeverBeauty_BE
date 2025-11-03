@@ -181,7 +181,7 @@ class ProductService:
         추천 요청에 따른 후보 제품 조회 (1차 필터링)
         카테고리, 가격 범위 기반으로 후보군 축소 - 데이터베이스 우선
         """
-        # 쿼리 구성 (먼저 정의)
+        # 쿼리 구성 (원래 상태로 복구)
         query = "SELECT * FROM products WHERE 1=1"
         params = []
         param_count = 0
@@ -292,7 +292,11 @@ class ProductService:
         try:
             logger.debug("PostgreSQL 동기 후보 제품 조회 시도")
             
-            rows = await self.sync_db.execute_query(query, *params)
+            # 동기 DB는 다른 플레이스홀더 사용 (%s)
+            # $1, $2, $3... -> %s, %s, %s...로 변환
+            import re
+            sync_query = re.sub(r'\$\d+', '%s', query)
+            rows = self.sync_db._execute_sync(sync_query, params)
             products = [Product.from_db_row(row) for row in rows]
             
             if products:
@@ -301,8 +305,8 @@ class ProductService:
             else:
                 logger.warning("PostgreSQL 동기에서 조건에 맞는 제품 없음 - 전체 제품 조회 시도")
                 # 조건을 완화하여 재시도
-                simple_query = f"SELECT * FROM products ORDER BY updated_at DESC, product_id DESC LIMIT ${param_count}"
-                rows = await self.sync_db.execute_query(simple_query, limit)
+                simple_query = "SELECT product_id, name, brand_name, category_name, category_code, tags, primary_attr, image_url, sub_product_name, updated_at FROM products ORDER BY updated_at DESC, product_id DESC LIMIT %s"
+                rows = self.sync_db._execute_sync(simple_query, [limit])
                 products = [Product.from_db_row(row) for row in rows]
                 if products:
                     logger.info(f"PostgreSQL 동기에서 전체 제품 조회 성공: {len(products)}개")

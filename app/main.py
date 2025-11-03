@@ -394,11 +394,18 @@ async def general_exception_handler(request: Request, exc: Exception):
 # 라우터 등록
 from app.api.recommendation import router as recommendation_router, legacy_router
 from app.api.admin import router as admin_router
+from app.api.scoring_test import router as scoring_test_router
 # from app.api.performance import router as performance_router  # psutil 의존성으로 임시 비활성화
 
+# 메인 API
 app.include_router(recommendation_router)
-app.include_router(legacy_router)
+
+# 관리자 API  
 app.include_router(admin_router)
+
+# 레거시 및 개발용 API
+app.include_router(legacy_router)
+app.include_router(scoring_test_router)  # 개발/디버깅용 (/api/v1/debug)
 # app.include_router(performance_router, prefix="/api/v1")  # 임시 비활성화
 
 # 루트 엔드포인트
@@ -479,6 +486,100 @@ async def debug_db_status():
         
     except Exception as e:
         logger.error(f"데이터베이스 상태 확인 오류: {e}")
+        return {
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
+        }
+
+@app.get(
+    "/debug/product-tags",
+    summary="제품 태그 샘플 조회",
+    description="실제 제품 태그 데이터를 확인합니다."
+)
+async def debug_product_tags():
+    """제품 태그 샘플 조회"""
+    try:
+        from app.database.postgres_sync import get_postgres_sync_db
+        
+        sync_db = get_postgres_sync_db()
+        
+        # 태그가 있는 제품 샘플 조회
+        query = """
+        SELECT product_id, name, brand_name, category_name, tags 
+        FROM products 
+        WHERE tags IS NOT NULL AND jsonb_array_length(tags) > 0 
+        LIMIT 10
+        """
+        
+        sample_products = sync_db._execute_sync(query)
+        
+        # 태그 통계
+        tag_stats_query = """
+        SELECT COUNT(*) as total_products,
+               COUNT(CASE WHEN tags IS NOT NULL AND jsonb_array_length(tags) > 0 THEN 1 END) as tagged_products
+        FROM products
+        """
+        
+        stats_result = sync_db._execute_sync(tag_stats_query)
+        stats = stats_result[0] if stats_result else {}
+        
+        # 모든 태그 수집 (빈도 분석)
+        all_tags_query = """
+        SELECT jsonb_array_elements_text(tags) as tag, COUNT(*) as frequency
+        FROM products 
+        WHERE tags IS NOT NULL AND jsonb_array_length(tags) > 0
+        GROUP BY tag
+        ORDER BY frequency DESC
+        LIMIT 20
+        """
+        
+        tag_frequency = sync_db._execute_sync(all_tags_query)
+        
+        return {
+            "statistics": stats,
+            "sample_products": sample_products,
+            "top_tags": tag_frequency,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"제품 태그 조회 오류: {e}")
+        return {
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
+        }
+
+@app.get(
+    "/debug/specific-products/{product_ids}",
+    summary="특정 제품들의 태그 조회",
+    description="특정 제품 ID들의 태그를 확인합니다."
+)
+async def debug_specific_products(product_ids: str):
+    """특정 제품들의 태그 조회"""
+    try:
+        from app.database.postgres_sync import get_postgres_sync_db
+        
+        sync_db = get_postgres_sync_db()
+        
+        # 쉼표로 구분된 ID들을 파싱
+        ids = [int(id.strip()) for id in product_ids.split(',')]
+        placeholders = ','.join(['%s'] * len(ids))
+        
+        query = f"""
+        SELECT product_id, name, brand_name, category_name, tags 
+        FROM products 
+        WHERE product_id IN ({placeholders})
+        """
+        
+        products = sync_db._execute_sync(query, ids)
+        
+        return {
+            "products": products,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"특정 제품 조회 오류: {e}")
         return {
             "error": str(e),
             "timestamp": datetime.now().isoformat()

@@ -71,6 +71,8 @@ class RecommendationItem(BaseModel):
     brand_name: str
     category: str
     final_score: float
+    base_score: float = 100.0
+    penalty_score: float = 0.0
     intent_match_score: float
     reasons: List[str]
     warnings: List[str] = []

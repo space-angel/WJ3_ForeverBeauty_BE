@@ -16,6 +16,12 @@ from app.services.intent_matching_service import AdvancedIntentMatcher
 from app.services.eligibility_engine import EligibilityEngine
 from app.services.scoring_engine import ScoreCalculator
 from app.services.ranking_service import RankingService
+from app.services.user_profile_service import UserProfileService
+from app.services.ingredient_service import IngredientService
+from app.shared.constants import (
+    RULESET_VERSION, ProductLimits, RuleEngineConfig, TimeConstants
+)
+from app.shared.utils import calculate_execution_time_ms
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +45,8 @@ class RecommendationEngine:
         self.eligibility_engine = EligibilityEngine()
         self.scoring_engine = ScoreCalculator()
         self.ranking_service = RankingService()
+        self.user_profile_service = UserProfileService()
+        self.ingredient_service = IngredientService()
         
         # RecommendationEngine 초기화 완료
     
@@ -51,7 +59,7 @@ class RecommendationEngine:
             # 추천 요청 시작
             
             # 1. 파이프라인 실행
-            pipeline_result = await self._execute_pipeline(request, request_id)
+            pipeline_result = await self._execute_pipeline(request, request_id, start_time)
             
             # 2. 응답 생성
             response = self._build_response(
@@ -68,74 +76,170 @@ class RecommendationEngine:
     async def _execute_pipeline(
         self, 
         request: RecommendationRequest, 
-        request_id: UUID
+        request_id: UUID,
+        start_time: datetime = None
     ) -> RecommendationPipeline:
         """추천 파이프라인 실행"""
         
-        # 0단계: 요청 전처리 (medications -> med_profile 변환)
-        self._preprocess_request(request)
-        
-        # 1단계: 후보 제품 조회
-        candidates = await self.product_service.get_candidate_products(
-            request, limit=1000
-        )
-        
-        if not candidates:
-            # 카테고리 필터 없이 재시도
-            logger.warning("카테고리 필터링된 후보 제품 없음 - 전체 제품에서 재시도")
-            request_copy = request.model_copy() if hasattr(request, 'model_copy') else request
-            if hasattr(request_copy, 'categories'):
-                request_copy.categories = None
+        try:
+            # 0단계: 요청 전처리 (medications -> med_profile 변환)
+            self._preprocess_request(request)
             
+            # 1단계: 후보 제품 조회
             candidates = await self.product_service.get_candidate_products(
-                request_copy, limit=500
+                request, limit=ProductLimits.DEFAULT_CANDIDATE_LIMIT
             )
             
             if not candidates:
-                raise ValueError("후보 제품이 없습니다 - 데이터베이스 연결 또는 데이터 문제")
-        
-        # 2단계: 안전성 평가 (배제)
-        eligibility_result = self.eligibility_engine.evaluate_products(
-            candidates, request, request_id
-        )
-        
-        safe_products = [
-            p for p in candidates 
-            if p.product_id not in eligibility_result.excluded_products
-        ]
-        
-        # 3단계: 적합성 평가 (감점)
-        logger.info(f"🎯 3단계: {len(safe_products)}개 제품 스코어링 시작")
-        scoring_results = self.scoring_engine.evaluate_products(
-            safe_products, request, request_id
-        )
-        logger.info(f"✅ 3단계 완료: 스코어링 결과 {len(scoring_results)}개")
-        
-        # 4단계: 순위 결정
-        ranked_products = self.ranking_service.rank_products(
-            safe_products, scoring_results, request, 
-            eligibility_result.excluded_products
-        )
-        
-        # 통계 수집
-        execution_time = (datetime.now().timestamp() - datetime.now().timestamp()) * 1000
-        statistics = {
-            'total_candidates': len(candidates),
-            'excluded_count': eligibility_result.total_excluded,
-            'safe_count': len(safe_products),
-            'final_count': len(ranked_products),
-            'execution_time_ms': execution_time,
-            'eligibility_rules_applied': getattr(eligibility_result, 'rules_applied', 0)
-        }
-        
-        return RecommendationPipeline(
-            candidates=candidates,
-            safe_products=safe_products,
-            scored_products=scoring_results,
-            ranked_products=ranked_products,
-            execution_time=execution_time,
-            statistics=statistics
-        )
+                # 카테고리 필터 없이 재시도
+                logger.warning("카테고리 필터링된 후보 제품 없음 - 전체 제품에서 재시도")
+                request_copy = request.model_copy() if hasattr(request, 'model_copy') else request
+                if hasattr(request_copy, 'categories'):
+                    request_copy.categories = None
+                
+                candidates = await self.product_service.get_candidate_products(
+                    request_copy, limit=ProductLimits.FALLBACK_CANDIDATE_LIMIT
+                )
+                
+                if not candidates:
+                    raise ValueError("후보 제품이 없습니다 - 데이터베이스 연결 또는 데이터 문제")
+            
+            # 2단계: 안전성 평가 (배제)
+            eligibility_result = self.eligibility_engine.evaluate_products(
+                candidates, request, request_id
+            )
+            
+            safe_products = [
+                p for p in candidates 
+                if p.product_id not in eligibility_result.excluded_products
+            ]
+            
+            # 3단계: 적합성 평가 (경로 B - 고급 스코어링)
+            logger.info(f"🎯 3단계: {len(safe_products)}개 제품 고급 스코어링 시작 (경로 B)")
+            logger.info(f"🔍 스코어링할 제품 ID들: {[p.product_id for p in safe_products[:5]]}")
+            
+            try:
+                logger.info("📞 경로 B 스코어링 엔진 호출 시작...")
+                
+                # 3-1. 사용자 프로필 매칭 결과 생성
+                sample_users = self.user_profile_service.get_sample_users(limit=1)
+                if sample_users:
+                    profile_matches = self.user_profile_service.create_profile_matches_from_users(
+                        sample_users, safe_products, request.intent_tags or []
+                    )
+                    primary_user = sample_users[0]
+                    user_profile = {
+                        "age_group": primary_user.age_group,
+                        "skin_type": primary_user.skin_type,
+                        "skin_concerns": primary_user.skin_concerns,
+                        "allergies": primary_user.allergies
+                    }
+                    logger.info(f"👤 사용자 프로필 적용: {primary_user.user_id} ({primary_user.age_group}, {primary_user.skin_type})")
+                else:
+                    # 폴백: 요청의 사용자 프로필 사용
+                    profile_matches = self._create_fallback_profile_matches(safe_products, request)
+                    user_profile = self._extract_user_profile_from_request(request)
+                    logger.info("👤 요청 기반 사용자 프로필 사용")
+                
+                # 3-2. 조건부 성분 분석 (특수 상황에서만)
+                use_ingredient_analysis = self._should_use_ingredient_analysis(request, user_profile)
+                
+                # 3-2. 조건부 성분 분석
+                if use_ingredient_analysis:
+                    logger.info("🧪 특수 상황 감지 - 실제 성분 분석 사용")
+                    ingredient_start = datetime.now()
+                    ingredient_analyses = await self._create_real_ingredient_analyses(safe_products)
+                    ingredient_time = (datetime.now() - ingredient_start).total_seconds()
+                    logger.info(f"🧪 실제 성분 분석 소요시간: {ingredient_time:.3f}초")
+                else:
+                    logger.info("⚡ 일반 상황 - 빠른 태그 기반 분석 사용")
+                    ingredient_start = datetime.now()
+                    ingredient_analyses = self._create_fast_tag_based_analyses(safe_products)
+                    ingredient_time = (datetime.now() - ingredient_start).total_seconds()
+                    logger.info(f"⚡ 빠른 태그 분석 소요시간: {ingredient_time:.3f}초")
+                
+                # 3-3. 커스텀 가중치 설정
+                custom_weights = self._determine_custom_weights(request, user_profile)
+                
+                # 3-4. 경로 B 실행
+                scoring_results_b = await self.scoring_engine.calculate_product_scores(
+                    products=safe_products,
+                    intent_tags=request.intent_tags or [],
+                    profile_matches=profile_matches,
+                    ingredient_analyses=ingredient_analyses,
+                    user_profile=user_profile,
+                    custom_weights=custom_weights
+                )
+                
+                # 3-5. 경로 A 호환 형식으로 변환
+                scoring_results = self._convert_path_b_to_path_a_format(scoring_results_b)
+                
+                logger.info("✅ 경로 B 스코어링 엔진 호출 완료")
+            except Exception as e:
+                logger.error(f"❌ 경로 B 스코어링 실패, 경로 A로 폴백: {e}")
+                import traceback
+                logger.error(f"❌ 스택 트레이스: {traceback.format_exc()}")
+                
+                # 폴백: 경로 A 사용
+                try:
+                    scoring_results = self.scoring_engine.evaluate_products(
+                        safe_products, request, request_id
+                    )
+                    logger.info("✅ 경로 A 폴백 성공")
+                except Exception as fallback_error:
+                    logger.error(f"❌ 경로 A 폴백도 실패: {fallback_error}")
+                    scoring_results = {}
+            
+            logger.info(f"✅ 3단계 완료: 스코어링 결과 {len(scoring_results)}개")
+            logger.info(f"🔍 스코어링 결과 키들: {list(scoring_results.keys())[:5]}")
+            
+            # 스코어링 결과 샘플 로그
+            if scoring_results:
+                sample_product_id = list(scoring_results.keys())[0]
+                sample_result = scoring_results[sample_product_id]
+                logger.info(f"🔍 스코어링 결과 샘플 (제품 {sample_product_id}): {sample_result}")
+                
+                # 처음 3개 제품의 상세 점수 로그
+                for i, (product_id, result) in enumerate(list(scoring_results.items())[:3]):
+                    logger.info(f"📊 제품 {product_id}: final={result['final_score']:.1f}, "
+                               f"intent={result.get('intent_match_score', 0):.1f}, "
+                               f"penalty={result.get('penalty_score', 0):.1f}")
+            else:
+                logger.warning("⚠️ 스코어링 결과가 비어있습니다!")
+            
+            # 4단계: 순위 결정
+            ranked_products = self.ranking_service.rank_products(
+                safe_products, scoring_results, request, 
+                eligibility_result.excluded_products
+            )
+            
+            # 통계 수집 (공유 유틸리티 사용)
+            execution_time_ms = calculate_execution_time_ms(start_time)
+            
+            statistics = {
+                'total_candidates': len(candidates),
+                'excluded_count': eligibility_result.total_excluded,
+                'safe_count': len(safe_products),
+                'final_count': len(ranked_products),
+                'execution_time_ms': execution_time_ms,
+                'eligibility_rules_applied': getattr(eligibility_result, 'rules_applied', 0)
+            }
+            
+            return RecommendationPipeline(
+                candidates=candidates,
+                safe_products=safe_products,
+                scored_products=scoring_results,
+                ranked_products=ranked_products,
+                execution_time=execution_time_ms,
+                statistics=statistics
+            )
+            
+        except Exception as e:
+            logger.error(f"파이프라인 실행 실패: {request_id} - {e}")
+            from app.shared.constants import ERROR_MESSAGES
+            user_message = ERROR_MESSAGES['system_error']['ko']
+            logger.error(f"사용자 메시지: {user_message}")
+            raise
     
     def _build_response(
         self,
@@ -154,8 +258,8 @@ class RecommendationEngine:
             timestamp=datetime.now(),
             success=True,
             execution_time_seconds=execution_time,
-            ruleset_version="v2.1",
-            active_rules_count=28
+            ruleset_version=RULESET_VERSION,
+            active_rules_count=RuleEngineConfig.ACTIVE_RULES
         )
         
         # 감점 통계 계산
@@ -172,7 +276,7 @@ class RecommendationEngine:
             final_recommendations=len(pipeline.ranked_products),
             eligibility_rules_applied=pipeline.statistics.get('eligibility_rules_applied', 0),
             scoring_rules_applied=total_scoring_rules,
-            query_time_ms=50.0,
+            query_time_ms=50.0,  # TODO: 실제 쿼리 시간으로 교체
             evaluation_time_ms=pipeline.execution_time * 0.6,
             ranking_time_ms=pipeline.execution_time * 0.4,
             total_time_ms=pipeline.execution_time
@@ -188,6 +292,8 @@ class RecommendationEngine:
                 brand_name=ranked_product.product.brand_name,
                 category=ranked_product.product.category_name,
                 final_score=round(ranked_product.final_score, 1),
+                base_score=round(ranked_product.base_score, 1),
+                penalty_score=round(ranked_product.penalty_score, 1),
                 intent_match_score=round(ranked_product.intent_match_score, 1),
                 reasons=ranked_product.reasons,
                 warnings=[],  # TODO: 경고 메시지
@@ -244,7 +350,7 @@ class RecommendationEngine:
             timestamp=datetime.now(),
             success=False,
             execution_time_seconds=execution_time,
-            ruleset_version="v2.1",
+            ruleset_version=RULESET_VERSION,
             active_rules_count=0
         )
         
@@ -267,3 +373,345 @@ class RecommendationEngine:
             pipeline_statistics=pipeline_stats,
             recommendations=[]
         )
+    
+    def _create_fallback_profile_matches(self, products: List, request) -> Dict:
+        """폴백용 프로필 매칭 결과 생성"""
+        from app.models.personalization_models import ProfileMatchResult
+        
+        profile_matches = {}
+        for product in products:
+            # 기본 점수 계산
+            age_score = 70.0
+            skin_score = 70.0
+            preference_score = 70.0
+            
+            # 요청 정보 기반 간단한 매칭
+            if hasattr(request, 'user_profile') and request.user_profile:
+                if hasattr(request.user_profile, 'age_group'):
+                    age_score = 75.0
+                if hasattr(request.user_profile, 'skin_type'):
+                    skin_score = 75.0
+            
+            overall_score = (age_score + skin_score + preference_score) / 3
+            
+            profile_matches[product.product_id] = ProfileMatchResult(
+                user_id=None,
+                product_id=product.product_id,
+                age_match_score=age_score,
+                skin_type_match_score=skin_score,
+                preference_match_score=preference_score,
+                overall_match_score=overall_score,
+                match_reasons=["기본 매칭"]
+            )
+        
+        return profile_matches
+    
+    def _extract_user_profile_from_request(self, request) -> Dict:
+        """요청에서 사용자 프로필 추출"""
+        user_profile = {}
+        
+        if hasattr(request, 'user_profile') and request.user_profile:
+            user_profile = {
+                "age_group": getattr(request.user_profile, 'age_group', None),
+                "skin_type": getattr(request.user_profile, 'skin_type', None),
+                "skin_concerns": getattr(request.user_profile, 'skin_concerns', []),
+                "allergies": getattr(request.user_profile, 'allergies', [])
+            }
+        
+        return user_profile
+    
+    def _create_mock_ingredient_analyses(self, products: List) -> Dict:
+        """목업 성분 분석 결과 생성"""
+        from app.models.personalization_models import (
+            ProductIngredientAnalysis, IngredientEffect, EffectType, SafetyLevel
+        )
+        
+        analyses = {}
+        for product in products:
+            # 간단한 목업 성분 분석
+            beneficial_effects = []
+            harmful_effects = []
+            safety_warnings = []
+            
+            product_name = product.name.lower()
+            
+            # 유익한 효과 추정
+            if any(keyword in product_name for keyword in ["vitamin", "비타민", "hyaluronic", "히알루론"]):
+                beneficial_effects.append(
+                    IngredientEffect(
+                        ingredient_id=1,
+                        ingredient_name="유익 성분",
+                        effect_type=EffectType.BENEFICIAL,
+                        effect_description="긍정적 효과",
+                        confidence_score=0.8,
+                        safety_level=SafetyLevel.SAFE
+                    )
+                )
+            
+            # 주의 성분 추정
+            if any(keyword in product_name for keyword in ["retinol", "레티놀", "acid", "산"]):
+                safety_warnings.append("점진적 사용 권장")
+            
+            analyses[product.product_id] = ProductIngredientAnalysis(
+                product_id=product.product_id,
+                product_name=product.name,
+                total_ingredients=15,
+                analyzed_ingredients=12,
+                beneficial_effects=beneficial_effects,
+                harmful_effects=harmful_effects,
+                safety_warnings=safety_warnings,
+                allergy_risks=[]
+            )
+        
+        return analyses
+    
+    async def _create_real_ingredient_analyses(self, products: List) -> Dict:
+        """실제 성분 DB 기반 분석 결과 생성"""
+        from app.models.personalization_models import (
+            ProductIngredientAnalysis, IngredientEffect, EffectType, SafetyLevel
+        )
+        
+        analyses = {}
+        
+        for product in products:
+            try:
+                # 실제 성분 안전성 정보 조회
+                safety_info = self.ingredient_service.get_ingredient_safety_info(product.product_id)
+                
+                # 유익한 효과 생성
+                beneficial_effects = []
+                for benefit in safety_info.get('beneficial_ingredients', []):
+                    beneficial_effects.append(
+                        IngredientEffect(
+                            ingredient_id=1,  # 실제 ID는 별도 조회 필요
+                            ingredient_name=benefit['name'],
+                            effect_type=EffectType.BENEFICIAL,
+                            effect_description=benefit['benefit'],
+                            confidence_score=0.9,
+                            safety_level=SafetyLevel.SAFE
+                        )
+                    )
+                
+                # 위험 효과 생성
+                harmful_effects = []
+                for risk in safety_info.get('high_risk_ingredients', []):
+                    harmful_effects.append(
+                        IngredientEffect(
+                            ingredient_id=2,
+                            ingredient_name=risk['name'],
+                            effect_type=EffectType.HARMFUL,
+                            effect_description=risk['reason'],
+                            confidence_score=0.8,
+                            safety_level=SafetyLevel.WARNING if 'EWG' in risk['reason'] else SafetyLevel.CAUTION
+                        )
+                    )
+                
+                # 안전성 경고 및 알레르기 위험
+                safety_warnings = safety_info.get('warnings', [])
+                allergy_risks = []
+                
+                if safety_info.get('allergy_ingredients', 0) > 0:
+                    allergy_risks.append(f"{safety_info['allergy_ingredients']}개 알레르기 성분 포함")
+                
+                analyses[product.product_id] = ProductIngredientAnalysis(
+                    product_id=product.product_id,
+                    product_name=product.name,
+                    total_ingredients=safety_info.get('total_ingredients', 0),
+                    analyzed_ingredients=safety_info.get('total_ingredients', 0),
+                    beneficial_effects=beneficial_effects,
+                    harmful_effects=harmful_effects,
+                    safety_warnings=safety_warnings,
+                    allergy_risks=allergy_risks
+                )
+                
+                logger.debug(f"실제 성분 분석 완료: 제품 {product.product_id}, "
+                           f"성분 {safety_info.get('total_ingredients', 0)}개, "
+                           f"알레르기 {safety_info.get('allergy_ingredients', 0)}개")
+                
+            except Exception as e:
+                logger.warning(f"제품 {product.product_id} 성분 분석 실패, 목업 사용: {e}")
+                
+                # 폴백: 목업 데이터 사용
+                analyses[product.product_id] = ProductIngredientAnalysis(
+                    product_id=product.product_id,
+                    product_name=product.name,
+                    total_ingredients=15,
+                    analyzed_ingredients=12,
+                    beneficial_effects=[],
+                    harmful_effects=[],
+                    safety_warnings=["성분 분석 데이터 부족"],
+                    allergy_risks=[]
+                )
+        
+        logger.info(f"성분 분석 완료: {len(analyses)}개 제품 (실제 DB 기반)")
+        return analyses
+    
+    def _should_use_ingredient_analysis(self, request, user_profile: Dict) -> bool:
+        """특수 상황에서만 성분 분석 사용 여부 결정"""
+        
+        # 1. 알레르기가 있는 사용자
+        if user_profile.get("allergies") and len(user_profile["allergies"]) > 0:
+            logger.info(f"🚨 알레르기 감지: {user_profile['allergies']}")
+            return True
+        
+        # 2. 제외할 성분이 지정된 경우
+        if hasattr(request, 'exclude_ingredients') and request.exclude_ingredients:
+            logger.info(f"🚫 제외 성분 지정: {request.exclude_ingredients}")
+            return True
+        
+        # 3. 의약품 복용자
+        if hasattr(request, 'medications') and request.medications:
+            logger.info(f"💊 의약품 복용자: {len(request.medications)}개 약물")
+            return True
+        
+        # 4. 임신/수유 관련 의도 태그
+        pregnancy_keywords = ["임신", "수유", "pregnancy", "breastfeeding", "pregnant"]
+        if hasattr(request, 'intent_tags') and request.intent_tags:
+            for tag in request.intent_tags:
+                if any(keyword in tag.lower() for keyword in pregnancy_keywords):
+                    logger.info(f"🤱 임신/수유 관련 의도: {tag}")
+                    return True
+        
+        # 5. 극민감 피부 (다중 민감성 고려사항)
+        if user_profile.get("skin_type") == "sensitive":
+            skin_concerns = user_profile.get("skin_concerns", [])
+            sensitive_concerns = ["atopic", "irritation", "redness", "sensitivity"]
+            if len([c for c in skin_concerns if any(sc in c for sc in sensitive_concerns)]) >= 2:
+                logger.info(f"🔥 극민감 피부 감지: {skin_concerns}")
+                return True
+        
+        # 6. 10대 사용자 (성분 안전성 중요)
+        if user_profile.get("age_group") == "10s":
+            logger.info("👶 10대 사용자 - 안전성 우선")
+            return True
+        
+        # 기본: 빠른 태그 기반 사용
+        logger.info("✨ 일반 사용자 - 빠른 추천 모드")
+        return False
+    
+    def _create_fast_tag_based_analyses(self, products: List) -> Dict:
+        """빠른 태그 기반 성분 분석 (목업)"""
+        from app.models.personalization_models import (
+            ProductIngredientAnalysis, IngredientEffect, EffectType, SafetyLevel
+        )
+        
+        analyses = {}
+        
+        for product in products:
+            # 제품 태그 기반 빠른 분석
+            product_tags = [tag.lower() for tag in (product.tags or [])]
+            product_name = product.name.lower()
+            
+            beneficial_effects = []
+            harmful_effects = []
+            safety_warnings = []
+            allergy_risks = []
+            
+            # 태그 기반 유익한 효과 추정
+            beneficial_keywords = {
+                "hyaluronic_acid": "강력한 보습 효과",
+                "보습": "수분 공급 효과", 
+                "진정": "피부 진정 효과",
+                "vitamin": "영양 공급 효과",
+                "비타민": "영양 공급 효과"
+            }
+            
+            for tag in product_tags:
+                for keyword, effect in beneficial_keywords.items():
+                    if keyword in tag:
+                        beneficial_effects.append(
+                            IngredientEffect(
+                                ingredient_id=1,
+                                ingredient_name=keyword,
+                                effect_type=EffectType.BENEFICIAL,
+                                effect_description=effect,
+                                confidence_score=0.8,
+                                safety_level=SafetyLevel.SAFE
+                            )
+                        )
+                        break
+            
+            # 태그 기반 주의 성분 추정
+            warning_keywords = {
+                "retinoid": "점진적 사용 권장",
+                "레티놀": "점진적 사용 권장",
+                "aha": "자외선 차단 필수",
+                "bha": "건성피부 주의",
+                "drying_alcohol": "건성피부 주의"
+            }
+            
+            for tag in product_tags:
+                for keyword, warning in warning_keywords.items():
+                    if keyword in tag:
+                        safety_warnings.append(warning)
+                        break
+            
+            # 알레르기 위험 추정 (일반적인 알레르기 성분)
+            allergy_keywords = ["fragrance", "향료", "essential_oil"]
+            for tag in product_tags:
+                for keyword in allergy_keywords:
+                    if keyword in tag:
+                        allergy_risks.append(f"{keyword} 알레르기 주의")
+                        break
+            
+            analyses[product.product_id] = ProductIngredientAnalysis(
+                product_id=product.product_id,
+                product_name=product.name,
+                total_ingredients=15,  # 추정값
+                analyzed_ingredients=12,  # 추정값
+                beneficial_effects=beneficial_effects,
+                harmful_effects=harmful_effects,
+                safety_warnings=safety_warnings,
+                allergy_risks=allergy_risks
+            )
+        
+        logger.info(f"빠른 태그 기반 분석 완료: {len(analyses)}개 제품")
+        return analyses
+    
+
+    
+    def _determine_custom_weights(self, request, user_profile: Dict) -> Dict[str, float]:
+        """사용자 프로필 기반 커스텀 가중치 결정"""
+        # 기본 가중치
+        weights = {"intent": 30.0, "personalization": 40.0, "safety": 30.0}
+        
+        # 연령대별 조정
+        age_group = user_profile.get("age_group")
+        if age_group in ["10s", "20s"]:
+            # 젊은 연령대: 안전성 중시
+            weights = {"intent": 25.0, "personalization": 35.0, "safety": 40.0}
+        elif age_group in ["40s", "50s"]:
+            # 성숙한 연령대: 개인화 중시
+            weights = {"intent": 35.0, "personalization": 45.0, "safety": 20.0}
+        
+        # 피부타입별 조정
+        skin_type = user_profile.get("skin_type")
+        if skin_type == "sensitive":
+            # 민감피부: 안전성 최우선
+            weights = {"intent": 20.0, "personalization": 30.0, "safety": 50.0}
+        
+        # 의약품 복용자: 안전성 강화
+        if hasattr(request, 'medications') and request.medications:
+            weights["safety"] = min(weights["safety"] + 10.0, 50.0)
+            weights["intent"] = max(weights["intent"] - 5.0, 20.0)
+            weights["personalization"] = max(weights["personalization"] - 5.0, 20.0)
+        
+        return weights
+    
+    def _convert_path_b_to_path_a_format(self, path_b_results: Dict) -> Dict:
+        """경로 B 결과를 경로 A 호환 형식으로 변환"""
+        path_a_format = {}
+        
+        for product_id, score_result in path_b_results.items():
+            path_a_format[product_id] = {
+                'final_score': score_result.final_score,
+                'base_score': 100.0,  # 경로 A 호환
+                'penalty_score': max(0, 100.0 - score_result.final_score),
+                'intent_match_score': score_result.score_breakdown.intent_score,
+                'personalization_score': score_result.score_breakdown.personalization_score,
+                'safety_penalty': max(0, 100.0 - score_result.score_breakdown.safety_score),
+                'medication_penalty': 0.0,  # 경로 B에서는 통합 처리
+                'rule_hits': []  # 경로 B에서는 다른 방식으로 처리
+            }
+        
+        return path_a_format
