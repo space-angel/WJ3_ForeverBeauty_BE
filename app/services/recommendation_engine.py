@@ -16,6 +16,10 @@ from app.services.intent_matching_service import AdvancedIntentMatcher
 from app.services.eligibility_engine import EligibilityEngine
 from app.services.scoring_engine import ScoreCalculator
 from app.services.ranking_service import RankingService
+from app.shared.constants import (
+    RULESET_VERSION, ProductLimits, RuleEngineConfig, TimeConstants
+)
+from app.shared.utils import calculate_execution_time_ms
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +55,7 @@ class RecommendationEngine:
             # 추천 요청 시작
             
             # 1. 파이프라인 실행
-            pipeline_result = await self._execute_pipeline(request, request_id)
+            pipeline_result = await self._execute_pipeline(request, request_id, start_time)
             
             # 2. 응답 생성
             response = self._build_response(
@@ -68,80 +72,90 @@ class RecommendationEngine:
     async def _execute_pipeline(
         self, 
         request: RecommendationRequest, 
-        request_id: UUID
+        request_id: UUID,
+        start_time: datetime = None
     ) -> RecommendationPipeline:
         """추천 파이프라인 실행"""
         
-        # 0단계: 요청 전처리 (medications -> med_profile 변환)
-        self._preprocess_request(request)
-        
-        # 1단계: 후보 제품 조회
-        candidates = await self.product_service.get_candidate_products(
-            request, limit=1000
-        )
-        
-        if not candidates:
-            # 카테고리 필터 없이 재시도
-            logger.warning("카테고리 필터링된 후보 제품 없음 - 전체 제품에서 재시도")
-            request_copy = request.model_copy() if hasattr(request, 'model_copy') else request
-            if hasattr(request_copy, 'categories'):
-                request_copy.categories = None
+        try:
+            # 0단계: 요청 전처리 (medications -> med_profile 변환)
+            self._preprocess_request(request)
             
+            # 1단계: 후보 제품 조회
             candidates = await self.product_service.get_candidate_products(
-                request_copy, limit=500
+                request, limit=ProductLimits.DEFAULT_CANDIDATE_LIMIT
             )
             
             if not candidates:
-                raise ValueError("후보 제품이 없습니다 - 데이터베이스 연결 또는 데이터 문제")
-        
-        # 2단계: 안전성 평가 (배제)
-        eligibility_result = self.eligibility_engine.evaluate_products(
-            candidates, request, request_id
-        )
-        
-        safe_products = [
-            p for p in candidates 
-            if p.product_id not in eligibility_result.excluded_products
-        ]
-        
-        # 3단계: 적합성 평가 (감점)
-        logger.info(f"🎯 3단계: {len(safe_products)}개 제품 스코어링 시작")
-        scoring_results = self.scoring_engine.evaluate_products(
-            safe_products, request, request_id
-        )
-        logger.info(f"✅ 3단계 완료: 스코어링 결과 {len(scoring_results)}개")
-        
-        # 스코어링 결과 샘플 로그
-        if scoring_results:
-            sample_product_id = list(scoring_results.keys())[0]
-            sample_result = scoring_results[sample_product_id]
-            logger.info(f"🔍 스코어링 결과 샘플 (제품 {sample_product_id}): {sample_result}")
-        
-        # 4단계: 순위 결정
-        ranked_products = self.ranking_service.rank_products(
-            safe_products, scoring_results, request, 
-            eligibility_result.excluded_products
-        )
-        
-        # 통계 수집
-        execution_time = (datetime.now().timestamp() - datetime.now().timestamp()) * 1000
-        statistics = {
-            'total_candidates': len(candidates),
-            'excluded_count': eligibility_result.total_excluded,
-            'safe_count': len(safe_products),
-            'final_count': len(ranked_products),
-            'execution_time_ms': execution_time,
-            'eligibility_rules_applied': getattr(eligibility_result, 'rules_applied', 0)
-        }
-        
-        return RecommendationPipeline(
-            candidates=candidates,
-            safe_products=safe_products,
-            scored_products=scoring_results,
-            ranked_products=ranked_products,
-            execution_time=execution_time,
-            statistics=statistics
-        )
+                # 카테고리 필터 없이 재시도
+                logger.warning("카테고리 필터링된 후보 제품 없음 - 전체 제품에서 재시도")
+                request_copy = request.model_copy() if hasattr(request, 'model_copy') else request
+                if hasattr(request_copy, 'categories'):
+                    request_copy.categories = None
+                
+                candidates = await self.product_service.get_candidate_products(
+                    request_copy, limit=ProductLimits.FALLBACK_CANDIDATE_LIMIT
+                )
+                
+                if not candidates:
+                    raise ValueError("후보 제품이 없습니다 - 데이터베이스 연결 또는 데이터 문제")
+            
+            # 2단계: 안전성 평가 (배제)
+            eligibility_result = self.eligibility_engine.evaluate_products(
+                candidates, request, request_id
+            )
+            
+            safe_products = [
+                p for p in candidates 
+                if p.product_id not in eligibility_result.excluded_products
+            ]
+            
+            # 3단계: 적합성 평가 (감점)
+            logger.info(f"🎯 3단계: {len(safe_products)}개 제품 스코어링 시작")
+            scoring_results = self.scoring_engine.evaluate_products(
+                safe_products, request, request_id
+            )
+            logger.info(f"✅ 3단계 완료: 스코어링 결과 {len(scoring_results)}개")
+            
+            # 스코어링 결과 샘플 로그
+            if scoring_results:
+                sample_product_id = list(scoring_results.keys())[0]
+                sample_result = scoring_results[sample_product_id]
+                logger.info(f"🔍 스코어링 결과 샘플 (제품 {sample_product_id}): {sample_result}")
+            
+            # 4단계: 순위 결정
+            ranked_products = self.ranking_service.rank_products(
+                safe_products, scoring_results, request, 
+                eligibility_result.excluded_products
+            )
+            
+            # 통계 수집 (공유 유틸리티 사용)
+            execution_time_ms = calculate_execution_time_ms(start_time)
+            
+            statistics = {
+                'total_candidates': len(candidates),
+                'excluded_count': eligibility_result.total_excluded,
+                'safe_count': len(safe_products),
+                'final_count': len(ranked_products),
+                'execution_time_ms': execution_time_ms,
+                'eligibility_rules_applied': getattr(eligibility_result, 'rules_applied', 0)
+            }
+            
+            return RecommendationPipeline(
+                candidates=candidates,
+                safe_products=safe_products,
+                scored_products=scoring_results,
+                ranked_products=ranked_products,
+                execution_time=execution_time_ms,
+                statistics=statistics
+            )
+            
+        except Exception as e:
+            logger.error(f"파이프라인 실행 실패: {request_id} - {e}")
+            from app.shared.constants import ERROR_MESSAGES
+            user_message = ERROR_MESSAGES['system_error']['ko']
+            logger.error(f"사용자 메시지: {user_message}")
+            raise
     
     def _build_response(
         self,
@@ -160,8 +174,8 @@ class RecommendationEngine:
             timestamp=datetime.now(),
             success=True,
             execution_time_seconds=execution_time,
-            ruleset_version="v2.1",
-            active_rules_count=28
+            ruleset_version=RULESET_VERSION,
+            active_rules_count=RuleEngineConfig.ACTIVE_RULES
         )
         
         # 감점 통계 계산
@@ -178,7 +192,7 @@ class RecommendationEngine:
             final_recommendations=len(pipeline.ranked_products),
             eligibility_rules_applied=pipeline.statistics.get('eligibility_rules_applied', 0),
             scoring_rules_applied=total_scoring_rules,
-            query_time_ms=50.0,
+            query_time_ms=50.0,  # TODO: 실제 쿼리 시간으로 교체
             evaluation_time_ms=pipeline.execution_time * 0.6,
             ranking_time_ms=pipeline.execution_time * 0.4,
             total_time_ms=pipeline.execution_time
@@ -250,7 +264,7 @@ class RecommendationEngine:
             timestamp=datetime.now(),
             success=False,
             execution_time_seconds=execution_time,
-            ruleset_version="v2.1",
+            ruleset_version=RULESET_VERSION,
             active_rules_count=0
         )
         
