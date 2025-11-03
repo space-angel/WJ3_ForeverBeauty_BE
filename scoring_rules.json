@@ -36,6 +36,30 @@
     "active": true
   },
   {
+    "rule_id": "SC-ANTICOAG-RETINOL",
+    "med_code": "MULTI:ANTICOAG",
+    "med_name_ko": "항응고/항혈소판",
+    "ingredient_tag": "retinol",
+    "severity": 2,
+    "weight": 15,
+    "rationale_ko": "레티놀 자극으로 인한 미세상처·출혈 리스크 증가 가능성",
+    "condition_json": {},
+    "description": "항응고제 복용 시 레티놀 성분 감점",
+    "active": true
+  },
+  {
+    "rule_id": "SC-ANTICOAG-RETINOID",
+    "med_code": "MULTI:ANTICOAG", 
+    "med_name_ko": "항응고/항혈소판",
+    "ingredient_tag": "retinoid",
+    "severity": 2,
+    "weight": 15,
+    "rationale_ko": "레티노이드 자극으로 인한 미세상처·출혈 리스크 증가 가능성",
+    "condition_json": {},
+    "description": "항응고제 복용 시 레티노이드 성분 감점",
+    "active": true
+  },
+  {
     "rule_id": "SC-HTN-ALC",
     "med_code": "MULTI:HTN",
     "med_name_ko": "고혈압(이뇨제/베타차단제)",

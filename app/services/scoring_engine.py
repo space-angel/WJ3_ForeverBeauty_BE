@@ -133,33 +133,55 @@ class IntentScorer:
         matched_tags: List[str], 
         rationales: List[str]
     ) -> float:
-        """제품 태그와 의도 매칭"""
+        """제품 태그와 의도 매칭 (다중 매칭 가점 포함)"""
         if not product.tags:
             return 30.0  # 기본 점수
         
         score = 30.0
         product_tags = [tag.lower() for tag in product.tags]
+        match_count = 0  # 매칭된 의도 수 카운트
         
         for intent in intent_tags:
             intent_lower = intent.lower()
             intent_keywords = self.intent_keywords.get(intent, [intent])
+            intent_matched = False
             
             # 직접 매칭
             if intent_lower in product_tags:
                 score += 25
                 matched_tags.append(intent)
                 rationales.append(f"'{intent}' 의도와 직접 매칭")
+                match_count += 1
+                intent_matched = True
                 continue
             
             # 키워드 매칭
-            for keyword in intent_keywords:
-                keyword_lower = keyword.lower()
-                for tag in product_tags:
-                    if keyword_lower in tag or self._fuzzy_match(keyword_lower, tag):
-                        score += 15
-                        matched_tags.append(keyword)
-                        rationales.append(f"'{intent}' 의도와 '{keyword}' 키워드 매칭")
+            if not intent_matched:
+                for keyword in intent_keywords:
+                    keyword_lower = keyword.lower()
+                    for tag in product_tags:
+                        if keyword_lower in tag or self._fuzzy_match(keyword_lower, tag):
+                            score += 15
+                            matched_tags.append(keyword)
+                            rationales.append(f"'{intent}' 의도와 '{keyword}' 키워드 매칭")
+                            match_count += 1
+                            intent_matched = True
+                            break
+                    if intent_matched:
                         break
+        
+        # 다중 의도 매칭 가점 (2개 이상 매칭 시)
+        if match_count >= 2:
+            multi_match_bonus = (match_count - 1) * 8  # 추가 매칭당 8점 가점
+            score += multi_match_bonus
+            rationales.append(f"다중 의도 매칭 가점 (+{multi_match_bonus}점)")
+            logger.debug(f"제품 {product.product_id}: {match_count}개 의도 매칭, 가점 {multi_match_bonus}점")
+        
+        # 태그 품질 보너스 (태그 수가 많을수록 약간의 가점)
+        if product.tags and len(product.tags) > 5:
+            tag_quality_bonus = min(3.0, len(product.tags) * 0.3)
+            score += tag_quality_bonus
+            rationales.append(f"풍부한 태그 정보 (+{tag_quality_bonus:.1f}점)")
         
         return min(100.0, score)
     
@@ -1069,7 +1091,8 @@ class ScoreCalculator:
         profile_matches: Dict[int, ProfileMatchResult],
         ingredient_analyses: Dict[int, ProductIngredientAnalysis],
         user_profile: Optional[Dict[str, Any]] = None,
-        custom_weights: Optional[Dict[str, float]] = None
+        custom_weights: Optional[Dict[str, float]] = None,
+        request: Optional[Any] = None
     ) -> Dict[int, ProductScore]:
         """제품별 종합 점수 계산"""
         
