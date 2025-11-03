@@ -442,7 +442,9 @@ class ScoreCalculator:
             return 50.0
         
         product_tags = product.tags if product.tags else []
-        if not product_tags:
+        product_name = product.name.lower() if product.name else ""
+        
+        if not product_tags and not product_name:
             return 30.0
         
         # 제품 태그 정규화
@@ -450,39 +452,63 @@ class ScoreCalculator:
         
         # 의도별 매칭 점수 계산
         intent_scores = []
+        matched_details = []
         
         for intent in request.intent_tags:
             intent_lower = intent.lower().strip()
             intent_score = 0
+            match_reason = ""
             
             # 1. 직접 매칭 (최고 점수)
             if intent_lower in normalized_product_tags:
                 intent_score = 100
+                match_reason = f"태그 직접 매칭: {intent_lower}"
+            elif intent_lower in product_name:
+                intent_score = 95
+                match_reason = f"제품명 직접 매칭: {intent_lower}"
             else:
                 # 2. 키워드 매핑 매칭
                 intent_keywords = self.intent_scorer.intent_keywords.get(intent_lower, [intent_lower])
                 best_match_score = 0
+                best_match_reason = ""
                 
                 for keyword in intent_keywords:
                     keyword_lower = keyword.lower()
+                    
+                    # 태그에서 키워드 검색
                     for tag in normalized_product_tags:
                         if keyword_lower == tag:
                             # 완전 일치
-                            best_match_score = max(best_match_score, 90)
+                            if 90 > best_match_score:
+                                best_match_score = 90
+                                best_match_reason = f"태그 완전 매칭: {keyword_lower}"
                         elif keyword_lower in tag:
                             # 부분 일치 (키워드가 태그에 포함)
-                            best_match_score = max(best_match_score, 70)
-                        elif tag in keyword_lower:
+                            if 70 > best_match_score:
+                                best_match_score = 70
+                                best_match_reason = f"태그 부분 매칭: {keyword_lower} in {tag}"
+                        elif tag in keyword_lower and len(tag) >= 2:
                             # 역방향 부분 일치 (태그가 키워드에 포함)
-                            best_match_score = max(best_match_score, 60)
+                            if 60 > best_match_score:
+                                best_match_score = 60
+                                best_match_reason = f"태그 역방향 매칭: {tag} in {keyword_lower}"
+                    
+                    # 제품명에서 키워드 검색
+                    if keyword_lower in product_name:
+                        if 75 > best_match_score:
+                            best_match_score = 75
+                            best_match_reason = f"제품명 키워드 매칭: {keyword_lower}"
                 
                 intent_score = best_match_score
+                match_reason = best_match_reason
             
             # 매칭되지 않은 경우 기본 점수
             if intent_score == 0:
                 intent_score = 20
+                match_reason = f"매칭 없음: {intent_lower}"
             
             intent_scores.append(intent_score)
+            matched_details.append(f"{intent_lower}={intent_score:.0f}({match_reason[:30]})")
         
         # 가중 평균 계산 (모든 의도가 중요)
         final_score = sum(intent_scores) / len(intent_scores)
@@ -502,6 +528,10 @@ class ScoreCalculator:
         if poor_matches > len(intent_scores) / 2:
             final_score = max(final_score - 10, 20)
         
+        # 디버그 로그 (처음 3개 제품만)
+        if len(matched_details) <= 3:
+            logger.debug(f"🎯 제품 {product.product_id} 의도 매칭: {'; '.join(matched_details)} → {final_score:.1f}")
+        
         return round(final_score, 1)
     
     def _calculate_personalization_score(self, product: Product, request) -> float:
@@ -511,23 +541,33 @@ class ScoreCalculator:
         
         profile = request.user_profile
         score = 70.0  # 기본 점수
+        score_details = []
         
         # 연령대별 점수 조정
         if hasattr(profile, 'age_group') and profile.age_group:
             age_bonus = self._get_age_compatibility_score(product, profile.age_group)
             score += age_bonus
+            score_details.append(f"연령({profile.age_group})={age_bonus:+.1f}")
         
         # 피부타입별 점수 조정
         if hasattr(profile, 'skin_type') and profile.skin_type:
             skin_bonus = self._get_skin_type_compatibility_score(product, profile.skin_type)
             score += skin_bonus
+            score_details.append(f"피부타입({profile.skin_type})={skin_bonus:+.1f}")
         
         # 피부 고민별 점수 조정
         if hasattr(profile, 'skin_concerns') and profile.skin_concerns:
             concern_bonus = self._get_skin_concern_compatibility_score(product, profile.skin_concerns)
             score += concern_bonus
+            score_details.append(f"피부고민={concern_bonus:+.1f}")
         
-        return min(score, 100.0)
+        final_score = min(score, 100.0)
+        
+        # 디버그 로그 (처음 3개 제품만)
+        if len(score_details) <= 3:
+            logger.debug(f"👤 제품 {product.product_id} 개인화: 기본70 + {'; '.join(score_details)} → {final_score:.1f}")
+        
+        return final_score
     
     def _apply_medication_scoring_rules(self, products: List[Product], request) -> Dict[int, Dict[str, Any]]:
         """의약품 기반 감점 룰 적용"""
@@ -537,20 +577,32 @@ class ScoreCalculator:
         penalties = {}
         
         try:
-            # 의약품 코드 추출
+            # 의약품 코드 추출 (개선된 로직)
             med_codes = []
-            if hasattr(request, 'medications') and request.medications:
-                for med in request.medications:
-                    if hasattr(med, 'active_ingredients'):
-                        med_codes.extend(med.active_ingredients)
             
+            # 1. medications 필드에서 추출
+            if hasattr(request, 'medications') and request.medications:
+                logger.info(f"🔍 medications 필드 발견: {len(request.medications)}개")
+                for med in request.medications:
+                    if hasattr(med, 'active_ingredients') and med.active_ingredients:
+                        med_codes.extend(med.active_ingredients)
+                        logger.info(f"  📋 의약품 '{med.name}': {med.active_ingredients}")
+            
+            # 2. med_profile 필드에서 추출 (호환성)
             if hasattr(request, 'med_profile') and request.med_profile:
-                if hasattr(request.med_profile, 'codes'):
+                if hasattr(request.med_profile, 'codes') and request.med_profile.codes:
                     med_codes.extend(request.med_profile.codes)
+                    logger.info(f"  📋 med_profile.codes: {request.med_profile.codes}")
+            
+            # 중복 제거
+            med_codes = list(set(med_codes))
             
             if not med_codes:
                 logger.info("💊 의약품 코드가 없어 감점 룰 적용 건너뜀")
+                logger.info(f"  🔍 request 속성: {[attr for attr in dir(request) if not attr.startswith('_')]}")
                 return penalties
+            
+            logger.info(f"💊 추출된 의약품 코드: {med_codes}")
             
             # 감점 룰 조회
             scoring_rules = rule_service.get_cached_scoring_rules()
@@ -647,6 +699,7 @@ class ScoreCalculator:
     def _calculate_safety_penalty(self, product: Product, request) -> float:
         """안전성 기반 감점 계산"""
         penalty = 0.0
+        penalty_details = []
         
         try:
             # 사용자 프로필 기반 안전성 검사
@@ -665,21 +718,27 @@ class ScoreCalculator:
                         for tag in product_tags:
                             if allergy_lower in tag:
                                 penalty += 20.0  # 알레르기 성분 발견 시 큰 감점
+                                penalty_details.append(f"알레르기({allergy})=-20")
                                 break
                         
                         # 제품명에서 알레르기 성분 검사
                         if allergy_lower in product_name:
                             penalty += 15.0
+                            penalty_details.append(f"알레르기명({allergy})=-15")
                 
                 # 피부타입별 부적합 성분 검사
                 if hasattr(profile, 'skin_type') and profile.skin_type:
                     skin_penalty = self._get_skin_type_penalty(product, profile.skin_type)
-                    penalty += skin_penalty
+                    if skin_penalty > 0:
+                        penalty += skin_penalty
+                        penalty_details.append(f"피부타입({profile.skin_type})=-{skin_penalty}")
                 
                 # 연령대별 부적합 성분 검사
                 if hasattr(profile, 'age_group') and profile.age_group:
                     age_penalty = self._get_age_safety_penalty(product, profile.age_group)
-                    penalty += age_penalty
+                    if age_penalty > 0:
+                        penalty += age_penalty
+                        penalty_details.append(f"연령({profile.age_group})=-{age_penalty}")
             
             # 제외 성분 검사
             if hasattr(request, 'exclude_ingredients') and request.exclude_ingredients:
@@ -692,15 +751,23 @@ class ScoreCalculator:
                     for tag in product_tags:
                         if exclude_lower in tag:
                             penalty += 25.0  # 제외 성분 발견 시 큰 감점
+                            penalty_details.append(f"제외성분({exclude_ingredient})=-25")
                             break
                     
                     if exclude_lower in product_name:
                         penalty += 20.0
+                        penalty_details.append(f"제외성분명({exclude_ingredient})=-20")
         
         except Exception as e:
             logger.error(f"안전성 감점 계산 실패 (product_id: {product.product_id}): {e}")
         
-        return min(penalty, 50.0)  # 최대 50점 감점
+        final_penalty = min(penalty, 50.0)  # 최대 50점 감점
+        
+        # 디버그 로그 (감점이 있는 경우만)
+        if final_penalty > 0:
+            logger.debug(f"⚠️  제품 {product.product_id} 안전성 감점: {'; '.join(penalty_details)} → -{final_penalty:.1f}")
+        
+        return final_penalty
     
     def _get_skin_type_penalty(self, product: Product, skin_type: str) -> float:
         """피부타입별 부적합 성분 감점"""
