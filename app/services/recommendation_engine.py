@@ -112,16 +112,35 @@ class RecommendationEngine:
             
             # 3단계: 적합성 평가 (감점)
             logger.info(f"🎯 3단계: {len(safe_products)}개 제품 스코어링 시작")
-            scoring_results = self.scoring_engine.evaluate_products(
-                safe_products, request, request_id
-            )
+            logger.info(f"🔍 스코어링할 제품 ID들: {[p.product_id for p in safe_products[:5]]}")
+            
+            try:
+                logger.info("📞 스코어링 엔진 호출 시작...")
+                scoring_results = self.scoring_engine.evaluate_products(
+                    safe_products, request, request_id
+                )
+                logger.info("✅ 스코어링 엔진 호출 완료")
+            except Exception as e:
+                logger.error(f"❌ 스코어링 엔진 호출 실패: {e}")
+                import traceback
+                logger.error(f"❌ 스택 트레이스: {traceback.format_exc()}")
+                scoring_results = {}  # 빈 결과로 폴백
             logger.info(f"✅ 3단계 완료: 스코어링 결과 {len(scoring_results)}개")
+            logger.info(f"🔍 스코어링 결과 키들: {list(scoring_results.keys())[:5]}")
             
             # 스코어링 결과 샘플 로그
             if scoring_results:
                 sample_product_id = list(scoring_results.keys())[0]
                 sample_result = scoring_results[sample_product_id]
                 logger.info(f"🔍 스코어링 결과 샘플 (제품 {sample_product_id}): {sample_result}")
+                
+                # 처음 3개 제품의 상세 점수 로그
+                for i, (product_id, result) in enumerate(list(scoring_results.items())[:3]):
+                    logger.info(f"📊 제품 {product_id}: final={result['final_score']:.1f}, "
+                               f"intent={result['intent_match_score']:.1f}, "
+                               f"penalty={result['penalty_score']:.1f}")
+            else:
+                logger.warning("⚠️ 스코어링 결과가 비어있습니다!")
             
             # 4단계: 순위 결정
             ranked_products = self.ranking_service.rank_products(
@@ -208,6 +227,8 @@ class RecommendationEngine:
                 brand_name=ranked_product.product.brand_name,
                 category=ranked_product.product.category_name,
                 final_score=round(ranked_product.final_score, 1),
+                base_score=round(ranked_product.base_score, 1),
+                penalty_score=round(ranked_product.penalty_score, 1),
                 intent_match_score=round(ranked_product.intent_match_score, 1),
                 reasons=ranked_product.reasons,
                 warnings=[],  # TODO: 경고 메시지

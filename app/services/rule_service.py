@@ -455,18 +455,43 @@ class RuleService:
             # 성분 태그 정규화
             normalized_tags = set(tag.lower().strip() for tag in ingredient_tags)
             
+            logger.debug(f"룰 매칭 시작: 의약품 코드 {all_resolved_codes}, 성분 태그 {normalized_tags}")
+            
             for rule in all_rules:
-                # 의약품 코드 매칭
-                if rule.get('med_code') and rule['med_code'] in all_resolved_codes:
-                    applicable.append(rule)
-                    continue
+                rule_matched = False
                 
-                # 성분 태그 매칭
-                if rule.get('ingredient_tag'):
-                    rule_tag = rule['ingredient_tag'].lower().strip()
-                    if rule_tag in normalized_tags:
+                # 의약품 코드 매칭
+                rule_med_code = rule.get('med_code')
+                if rule_med_code and rule_med_code in all_resolved_codes:
+                    # 성분 태그도 매칭되는지 확인
+                    rule_ingredient = rule.get('ingredient_tag', '').lower().strip()
+                    if rule_ingredient:
+                        # 정확한 매칭 또는 부분 매칭 확인
+                        for tag in normalized_tags:
+                            if (rule_ingredient == tag or 
+                                rule_ingredient in tag or 
+                                tag in rule_ingredient):
+                                applicable.append(rule)
+                                rule_matched = True
+                                logger.debug(f"룰 매칭: {rule.get('rule_id')} - {rule_med_code} + {rule_ingredient} ↔ {tag}")
+                                break
+                    else:
+                        # 성분 태그가 없는 룰은 의약품 코드만으로 매칭
                         applicable.append(rule)
-                        continue
+                        rule_matched = True
+                        logger.debug(f"룰 매칭 (의약품만): {rule.get('rule_id')} - {rule_med_code}")
+                
+                # 성분 태그만으로 매칭 (의약품 코드가 없는 룰)
+                elif not rule_med_code and rule.get('ingredient_tag'):
+                    rule_ingredient = rule['ingredient_tag'].lower().strip()
+                    for tag in normalized_tags:
+                        if (rule_ingredient == tag or 
+                            rule_ingredient in tag or 
+                            tag in rule_ingredient):
+                            applicable.append(rule)
+                            rule_matched = True
+                            logger.debug(f"룰 매칭 (성분만): {rule.get('rule_id')} - {rule_ingredient} ↔ {tag}")
+                            break
             
             logger.debug(f"적용 가능한 룰 {len(applicable)}개 발견 "
                         f"(의약품: {len(all_resolved_codes)}, 성분: {len(normalized_tags)})")
@@ -475,6 +500,8 @@ class RuleService:
             
         except Exception as e:
             logger.error(f"적용 가능한 룰 찾기 오류: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return []
     
     def evaluate_condition_json(self, condition_json: Dict[str, Any], context: Dict[str, Any]) -> bool:

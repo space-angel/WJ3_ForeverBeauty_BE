@@ -396,6 +396,14 @@ class ScoreCalculator:
         rule_penalties = self._apply_medication_scoring_rules(products, request)
         logger.info(f"💊 의약품 룰 적용 결과: {len(rule_penalties)}개 제품에 감점")
         
+        # 감점 적용된 제품 상세 로그
+        if rule_penalties:
+            for product_id, penalty_info in list(rule_penalties.items())[:3]:
+                logger.info(f"💊 제품 {product_id}: 총 감점 {penalty_info['total_penalty']}, "
+                           f"적용 룰 {len(penalty_info['rule_hits'])}개")
+        else:
+            logger.warning("⚠️ 감점 적용된 제품이 없습니다!")
+        
         for product in products:
             # 1. 기본 점수
             base_score = 100
@@ -441,11 +449,12 @@ class ScoreCalculator:
             
             # 상세 로그 (처음 3개 제품만)
             if len(results) <= 3:
+                product_tags = getattr(product, 'tags', []) or []
                 logger.info(f"📊 제품 {product.product_id} ({product.name[:20]}...): "
                           f"최종점수={final_score:.1f}, 의도={intent_score:.1f}, "
                           f"개인화={personalization_score:.1f}, 안전성감점={safety_penalty:.1f}, "
                           f"의약품감점={rule_penalties.get(product.product_id, {}).get('total_penalty', 0):.1f}, "
-                          f"룰적용={len(rule_hits)}개")
+                          f"룰적용={len(rule_hits)}개, 태그={product_tags[:5]}")
         
         return results
     
@@ -594,29 +603,55 @@ class ScoreCalculator:
             # 의약품 코드 추출 (개선된 로직)
             med_codes = []
             
+            logger.debug(f"🔍 request 타입: {type(request)}")
+            logger.debug(f"🔍 request 속성: {[attr for attr in dir(request) if not attr.startswith('_')]}")
+            
             # 1. medications 필드에서 추출
             if hasattr(request, 'medications') and request.medications:
                 logger.info(f"🔍 medications 필드 발견: {len(request.medications)}개")
-                for med in request.medications:
+                for i, med in enumerate(request.medications):
+                    logger.debug(f"  의약품 {i}: {type(med)}, {med}")
                     if hasattr(med, 'active_ingredients') and med.active_ingredients:
                         med_codes.extend(med.active_ingredients)
                         logger.info(f"  📋 의약품 '{med.name}': {med.active_ingredients}")
+                    elif isinstance(med, dict) and 'active_ingredients' in med:
+                        med_codes.extend(med['active_ingredients'])
+                        logger.info(f"  📋 의약품 '{med.get('name', 'unknown')}': {med['active_ingredients']}")
+                    else:
+                        logger.debug(f"  ❌ 의약품 {i}에서 active_ingredients를 찾을 수 없음")
+            else:
+                logger.debug("❌ medications 필드가 없거나 비어있음")
             
             # 2. med_profile 필드에서 추출 (호환성)
             if hasattr(request, 'med_profile') and request.med_profile:
+                logger.debug(f"🔍 med_profile 발견: {type(request.med_profile)}")
                 if hasattr(request.med_profile, 'codes') and request.med_profile.codes:
                     med_codes.extend(request.med_profile.codes)
                     logger.info(f"  📋 med_profile.codes: {request.med_profile.codes}")
+                else:
+                    logger.debug("❌ med_profile.codes가 없거나 비어있음")
+            else:
+                logger.debug("❌ med_profile 필드가 없음")
             
             # 중복 제거
             med_codes = list(set(med_codes))
             
             if not med_codes:
                 logger.info("💊 의약품 코드가 없어 감점 룰 적용 건너뜀")
-                logger.info(f"  🔍 request 속성: {[attr for attr in dir(request) if not attr.startswith('_')]}")
                 return penalties
             
             logger.info(f"💊 추출된 의약품 코드: {med_codes}")
+            
+            # 의약품 코드 해석 (별칭 포함)
+            resolved_codes = rule_service.resolve_med_codes_batch(med_codes)
+            all_resolved_codes = set()
+            for codes in resolved_codes.values():
+                all_resolved_codes.update(codes)
+            
+            # 원본 코드도 포함 (MULTI:ANTICOAG 같은 코드를 위해)
+            all_resolved_codes.update(med_codes)
+            
+            logger.info(f"💊 해석된 의약품 코드: {all_resolved_codes}")
             
             # 감점 룰 조회
             scoring_rules = rule_service.get_cached_scoring_rules()
@@ -631,28 +666,48 @@ class ScoreCalculator:
                 if product.tags:
                     ingredient_tags = [tag.lower().strip() for tag in product.tags]
                 
+                logger.debug(f"🔍 제품 {product.product_id} 태그: {ingredient_tags}")
+                
                 # 각 룰에 대해 검사
                 for rule in scoring_rules:
                     rule_applied = False
                     
                     # 의약품 코드 매칭
-                    if rule.get('med_code') and rule['med_code'] in med_codes:
+                    rule_med_code = rule.get('med_code')
+                    if rule_med_code and rule_med_code in all_resolved_codes:
                         # 성분 태그 매칭
                         rule_ingredient = rule.get('ingredient_tag', '').lower().strip()
-                        if rule_ingredient and rule_ingredient in ingredient_tags:
-                            # 조건 검사
-                            if self._check_rule_conditions(rule, request):
-                                penalty = rule.get('weight', 10)
-                                total_penalty += penalty
-                                
-                                product_penalties.append({
-                                    'rule_id': rule.get('rule_id', 'unknown'),
-                                    'penalty': penalty,
-                                    'reason': rule.get('rationale_ko', '의약품 상호작용 주의'),
-                                    'med_code': rule.get('med_code'),
-                                    'ingredient': rule_ingredient
-                                })
-                                rule_applied = True
+                        if rule_ingredient:
+                            # 정확한 매칭 또는 부분 매칭 확인
+                            tag_matched = False
+                            logger.info(f"🔍 태그 매칭 시도: 룰태그='{rule_ingredient}' vs 제품태그={ingredient_tags[:5]}")
+                            
+                            for product_tag in ingredient_tags:
+                                if (rule_ingredient == product_tag or 
+                                    rule_ingredient in product_tag or 
+                                    product_tag in rule_ingredient):
+                                    tag_matched = True
+                                    logger.info(f"  ✅ 태그 매칭 성공: {rule_ingredient} ↔ {product_tag}")
+                                    break
+                            
+                            if not tag_matched:
+                                logger.info(f"  ❌ 태그 매칭 실패: {rule_ingredient}")
+                            
+                            if tag_matched:
+                                # 조건 검사
+                                if self._check_rule_conditions(rule, request):
+                                    penalty = rule.get('weight', 10)
+                                    total_penalty += penalty
+                                    
+                                    product_penalties.append({
+                                        'rule_id': rule.get('rule_id', 'unknown'),
+                                        'penalty': penalty,
+                                        'reason': rule.get('rationale_ko', '의약품 상호작용 주의'),
+                                        'med_code': rule.get('med_code'),
+                                        'ingredient': rule_ingredient
+                                    })
+                                    rule_applied = True
+                                    logger.debug(f"  🎯 룰 적용: {rule.get('rule_id')} = -{penalty}점")
                 
                 if product_penalties:
                     penalties[product.product_id] = {
@@ -661,7 +716,7 @@ class ScoreCalculator:
                     }
             
             logger.info(f"🎯 감점 룰 적용 완료: {len(penalties)}개 제품에 감점 적용")
-            logger.info(f"📊 총 감점 룰 수: {len(scoring_rules)}, 의약품 코드: {med_codes}")
+            logger.info(f"📊 총 감점 룰 수: {len(scoring_rules)}, 원본 의약품 코드: {med_codes}, 해석된 코드: {all_resolved_codes}")
             
             # 상세 로그
             for product_id, penalty_info in penalties.items():
@@ -671,6 +726,8 @@ class ScoreCalculator:
             
         except Exception as e:
             logger.error(f"의약품 감점 룰 적용 실패: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
         finally:
             rule_service.close_session()
         
@@ -1003,84 +1060,7 @@ class ScoreCalculator:
         
         return min(penalty, 50.0)  # 최대 50점 감점
     
-    def _apply_medication_scoring_rules(self, products: List[Product], request) -> Dict[int, Dict[str, Any]]:
-        """의약품 기반 감점 룰 적용"""
-        from app.services.rule_service import RuleService
-        
-        rule_service = RuleService()
-        penalties = {}
-        
-        try:
-            # 의약품 코드 추출
-            med_codes = []
-            if hasattr(request, 'med_profile') and request.med_profile and request.med_profile.codes:
-                med_codes = request.med_profile.codes
-            
-            if not med_codes:
-                return penalties  # 의약품 없으면 감점 없음
-            
-            # 의약품 코드 해석 (별칭 포함)
-            resolved_codes = rule_service.resolve_med_codes_batch(med_codes)
-            all_med_codes = set()
-            for codes in resolved_codes.values():
-                all_med_codes.update(codes)
-            
-            # 감점 룰 조회
-            scoring_rules = rule_service.get_cached_scoring_rules()
-            
-            # 각 제품에 대해 감점 룰 적용
-            for product in products:
-                product_penalties = []
-                total_penalty = 0
-                
-                product_tags = [tag.lower().strip() for tag in (product.tags or [])]
-                
-                for rule in scoring_rules:
-                    # 의약품 코드 매칭
-                    rule_med_code = rule.get('med_code')
-                    if not rule_med_code or rule_med_code not in all_med_codes:
-                        continue
-                    
-                    # 성분 태그 매칭
-                    rule_ingredient = rule.get('ingredient_tag', '').lower().strip()
-                    if not rule_ingredient:
-                        continue
-                    
-                    # 태그 매칭 확인 (유연한 매칭)
-                    tag_matched = False
-                    for product_tag in product_tags:
-                        if (rule_ingredient == product_tag or 
-                            rule_ingredient in product_tag or 
-                            product_tag in rule_ingredient):
-                            tag_matched = True
-                            break
-                    
-                    if tag_matched:
-                        penalty_weight = rule.get('weight', 0)
-                        total_penalty += penalty_weight
-                        
-                        rule_hit = {
-                            'rule_id': rule.get('rule_id'),
-                            'weight': penalty_weight,
-                            'rationale_ko': rule.get('rationale_ko', ''),
-                            'med_name_ko': rule.get('med_name_ko', ''),
-                            'ingredient_tag': rule.get('ingredient_tag', '')
-                        }
-                        product_penalties.append(rule_hit)
-                
-                if total_penalty > 0:
-                    penalties[product.product_id] = {
-                        'total_penalty': min(total_penalty, 100),  # 최대 100점 감점
-                        'rule_hits': product_penalties
-                    }
-            
-            rule_service.close_session()
-            return penalties
-            
-        except Exception as e:
-            logger.error(f"의약품 감점 룰 적용 실패: {e}")
-            rule_service.close_session()
-            return penalties
+
     
     async def calculate_product_scores(
         self,
