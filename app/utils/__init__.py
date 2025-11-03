@@ -5,11 +5,9 @@
 
 from .alias_mapper import AliasMapper
 from .validators import RequestValidator, ValidationError
-from .logger_service import LoggerService
 
 __all__ = [
     "AliasMapper",
     "RequestValidator",
-    "ValidationError",
-    "LoggerService"
+    "ValidationError"
 ]

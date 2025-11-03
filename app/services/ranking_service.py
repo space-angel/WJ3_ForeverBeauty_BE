@@ -143,20 +143,38 @@ class RankingService:
             for product in valid_products:
                 scoring_result = scoring_results.get(product.product_id)
                 
-                # 의도 일치도 계산
-                intent_match_score = self.product_service.calculate_intent_match_score(
-                    product, request.intent_tags or []
-                )
+                # scoring_engine 결과 사용 (우선순위)
+                if scoring_result:
+                    final_score = scoring_result['final_score']
+                    base_score = scoring_result['base_score']
+                    penalty_score = scoring_result['penalty_score']
+                    intent_match_score = scoring_result['intent_match_score']
+                    rule_hits = scoring_result['rule_hits']
+                    
+                    logger.info(f"🎯 제품 {product.product_id}: scoring_engine 결과 사용 - "
+                               f"final={final_score:.1f}, intent={intent_match_score:.1f}")
+                else:
+                    # 폴백: product_service 의도 점수 계산
+                    intent_match_score = self.product_service.calculate_intent_match_score(
+                        product, request.intent_tags or []
+                    )
+                    final_score = 100
+                    base_score = 100
+                    penalty_score = 0
+                    rule_hits = []
+                    
+                    logger.info(f"🎯 제품 {product.product_id}: 폴백 점수 사용 - "
+                               f"intent={intent_match_score}")
                 
                 # RankedProduct 생성
                 ranked_product = RankedProduct(
                     product=product,
                     rank=0,  # 나중에 설정
-                    final_score=scoring_result['final_score'] if scoring_result else 100,
-                    base_score=scoring_result['base_score'] if scoring_result else 100,
-                    penalty_score=scoring_result['penalty_score'] if scoring_result else 0,
+                    final_score=final_score,
+                    base_score=base_score,
+                    penalty_score=penalty_score,
                     intent_match_score=intent_match_score,
-                    rule_hits=scoring_result['rule_hits'] if scoring_result else []
+                    rule_hits=rule_hits
                 )
                 
                 # 추천 사유 생성

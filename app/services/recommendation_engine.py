@@ -111,6 +111,12 @@ class RecommendationEngine:
         )
         logger.info(f"✅ 3단계 완료: 스코어링 결과 {len(scoring_results)}개")
         
+        # 스코어링 결과 샘플 로그
+        if scoring_results:
+            sample_product_id = list(scoring_results.keys())[0]
+            sample_result = scoring_results[sample_product_id]
+            logger.info(f"🔍 스코어링 결과 샘플 (제품 {sample_product_id}): {sample_result}")
+        
         # 4단계: 순위 결정
         ranked_products = self.ranking_service.rank_products(
             safe_products, scoring_results, request, 
