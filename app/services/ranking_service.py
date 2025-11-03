@@ -140,25 +140,45 @@ class RankingService:
             # RankedProduct 객체 생성
             ranked_products = []
             
-            logger.info(f"🔍 스코어링 결과 확인: {len(scoring_results)}개 제품, 키: {list(scoring_results.keys())[:5]}")
+            logger.debug(f"🔍 스코어링 결과 확인: {len(scoring_results)}개 제품, 키: {list(scoring_results.keys())[:5]}")
             
             for product in valid_products:
                 scoring_result = scoring_results.get(product.product_id)
                 
-                logger.info(f"🔍 제품 {product.product_id} 스코어링 결과 존재: {scoring_result is not None}")
-                if scoring_result:
-                    logger.info(f"🔍 스코어링 결과 내용: {scoring_result}")
+                logger.debug(f"🔍 제품 {product.product_id} 스코어링 결과 존재: {scoring_result is not None}")
+                if scoring_result and hasattr(scoring_result, 'final_score'):
+                    logger.debug(f"🔍 제품 {product.product_id}: final={scoring_result.final_score:.1f}, intent={scoring_result.score_breakdown.intent_score:.1f}")
                 
-                # scoring_engine 결과 사용 (우선순위)
+                # 경로 B 결과 사용 (ProductScore 객체)
                 if scoring_result:
-                    final_score = scoring_result['final_score']
-                    base_score = scoring_result['base_score']
-                    penalty_score = scoring_result['penalty_score']
-                    intent_match_score = scoring_result['intent_match_score']
-                    rule_hits = scoring_result['rule_hits']
+                    # 경로 B ProductScore 객체에서 점수 추출
+                    if hasattr(scoring_result, 'final_score'):
+                        # ProductScore 객체인 경우
+                        final_score = scoring_result.final_score
+                        intent_match_score = scoring_result.score_breakdown.intent_score
+                        personalization_score = scoring_result.score_breakdown.personalization_score
+                        safety_score = scoring_result.score_breakdown.safety_score
+                        base_score = 100  # 경로 B에서는 기본 100
+                        penalty_score = max(0, 100 - final_score)  # 감점 계산
+                        rule_hits = []  # 경로 B에서는 다른 방식으로 처리
+                    elif isinstance(scoring_result, dict):
+                        # 경로 A 호환 형식인 경우 (폴백)
+                        final_score = scoring_result.get('final_score', 0)
+                        base_score = scoring_result.get('base_score', 100)
+                        penalty_score = scoring_result.get('penalty_score', 0)
+                        intent_match_score = scoring_result.get('intent_match_score', 0)
+                        rule_hits = scoring_result.get('rule_hits', [])
+                    else:
+                        # 알 수 없는 형식
+                        logger.warning(f"⚠️ 알 수 없는 스코어링 결과 형식: {type(scoring_result)}")
+                        final_score = 50
+                        intent_match_score = 50
+                        base_score = 100
+                        penalty_score = 50
+                        rule_hits = []
                     
-                    logger.info(f"🎯 제품 {product.product_id}: scoring_engine 결과 사용 - "
-                               f"final={final_score:.1f}, intent={intent_match_score:.1f}, penalty={penalty_score:.1f}")
+                    logger.debug(f"🎯 제품 {product.product_id}: 경로 B 결과 사용 - "
+                                f"final={final_score:.1f}, intent={intent_match_score:.1f}, penalty={penalty_score:.1f}")
                 else:
                     # 폴백: product_service 의도 점수 계산
                     intent_match_score = self.product_service.calculate_intent_match_score(

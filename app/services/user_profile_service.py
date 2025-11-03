@@ -51,7 +51,7 @@ class UserProfileService:
             WHERE age_group IS NOT NULL 
             AND skin_type IS NOT NULL
             ORDER BY created_at DESC
-            LIMIT ?
+            LIMIT %s
             """
             
             rows = self.db._execute_sync(query, (limit,))
@@ -177,7 +177,7 @@ class UserProfileService:
             query = """
             SELECT user_id, age_group, skin_type, skin_concerns, allergies, preferences, created_at
             FROM user_profiles 
-            WHERE user_id = ?
+            WHERE user_id = %s
             """
             
             rows = self.db._execute_sync(query, (user_id,))
@@ -493,10 +493,8 @@ class UserProfileService:
                 }
             ]
             
-            # 기존 테스트 사용자 삭제 (중복 방지)
-            delete_query = "DELETE FROM user_profiles WHERE user_id LIKE %s"
-            self.db._execute_sync(delete_query, ('test_user_%',))
-            logger.info("기존 테스트 사용자 데이터 삭제 완료")
+            # 새 테이블이므로 기존 데이터 삭제 불필요
+            logger.info("새 테이블에 목업 데이터 추가 시작")
             
             # 새 목업 사용자 추가
             insert_query = """
@@ -547,11 +545,11 @@ class UserProfileService:
             ORDER BY ordinal_position
             """
             
-            columns = self.db.execute_query(structure_query)
+            columns = self.db._execute_sync(structure_query)
             
             # 샘플 데이터 조회
             sample_query = "SELECT * FROM user_profiles LIMIT 3"
-            sample_data = self.db.execute_query(sample_query)
+            sample_data = self.db._execute_sync(sample_query)
             
             # 테이블 존재 여부 확인
             table_exists_query = """
@@ -560,7 +558,8 @@ class UserProfileService:
                 WHERE table_name = 'user_profiles'
             )
             """
-            table_exists = self.db.execute_single(table_exists_query)
+            table_exists_result = self.db._execute_sync(table_exists_query)
+            table_exists = table_exists_result[0] if table_exists_result else None
             
             return {
                 "table_exists": table_exists.get("exists", False) if table_exists else False,
@@ -580,10 +579,15 @@ class UserProfileService:
     def create_user_profiles_table(self) -> Dict[str, Any]:
         """사용자 프로필 테이블 생성 (없는 경우)"""
         try:
+            # 기존 테이블 삭제 (테스트용)
+            drop_table_query = "DROP TABLE IF EXISTS user_profiles CASCADE"
+            self.db._execute_sync(drop_table_query)
+            logger.info("기존 user_profiles 테이블 삭제 완료")
+            
             create_table_query = """
-            CREATE TABLE IF NOT EXISTS user_profiles (
+            CREATE TABLE user_profiles (
                 id SERIAL PRIMARY KEY,
-                user_id VARCHAR(255) UNIQUE NOT NULL,
+                user_id TEXT UNIQUE NOT NULL,
                 age_group VARCHAR(10),
                 skin_type VARCHAR(20),
                 skin_concerns JSONB,
@@ -594,7 +598,7 @@ class UserProfileService:
             )
             """
             
-            self.db.execute_query(create_table_query)
+            self.db._execute_sync(create_table_query)
             
             # 인덱스 생성
             index_queries = [
@@ -604,7 +608,7 @@ class UserProfileService:
             ]
             
             for index_query in index_queries:
-                self.db.execute_query(index_query)
+                self.db._execute_sync(index_query)
             
             logger.info("user_profiles 테이블 및 인덱스 생성 완료")
             
@@ -633,7 +637,8 @@ class UserProfileService:
             FROM user_profiles
             """
             
-            result = self.db.execute_single(stats_query)
+            result_rows = self.db._execute_sync(stats_query)
+            result = result_rows[0] if result_rows else {}
             
             return {
                 "total_users": result.get("total_users", 0),
