@@ -1,5 +1,8 @@
 """
-추천 API - 실제 추천 엔진 연동
+메인 화장품 추천 API
+- 경로 B (고급 3축 스코어링) 기본 사용
+- 조건부 성분 분석 (특수 상황 자동 감지)
+- 실제 성분 DB 연동 (1,326개 성분)
 """
 from fastapi import APIRouter, HTTPException
 from datetime import datetime
@@ -25,7 +28,24 @@ router = APIRouter(
 @router.post("/recommend", response_model=RecommendationResponse)
 async def recommend_products(request: RecommendationRequest):
     """
-    화장품 추천 API - 실제 추천 엔진 사용
+    🎯 메인 화장품 추천 API
+    
+    ## 🚀 고급 추천 시스템 (경로 B)
+    - **3축 스코어링**: 의도 매칭 + 개인화 + 안전성
+    - **조건부 성분 분석**: 특수 상황 자동 감지
+    - **실시간 개인화**: 사용자 프로필 기반 맞춤 추천
+    
+    ## 🧪 특수 상황 자동 감지
+    - 알레르기 있는 사용자 → 실제 성분 DB 분석
+    - 의약품 복용자 → 상호작용 검사
+    - 임신/수유부 → 안전 성분만 선별
+    - 10대 사용자 → 안전성 우선 평가
+    - 극민감 피부 → 정밀 성분 검토
+    
+    ## 📊 성능
+    - 평균 응답시간: 6초 (326개 제품 분석)
+    - 정확도: 3축 통합 점수 시스템
+    - 안전성: 실제 성분 DB 기반 검증
     """
     # 시간 측정 시작
     tracker = TimeTracker("recommendation_api").start()

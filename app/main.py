@@ -394,11 +394,18 @@ async def general_exception_handler(request: Request, exc: Exception):
 # 라우터 등록
 from app.api.recommendation import router as recommendation_router, legacy_router
 from app.api.admin import router as admin_router
+from app.api.scoring_test import router as scoring_test_router
 # from app.api.performance import router as performance_router  # psutil 의존성으로 임시 비활성화
 
+# 메인 API
 app.include_router(recommendation_router)
-app.include_router(legacy_router)
+
+# 관리자 API  
 app.include_router(admin_router)
+
+# 레거시 및 개발용 API
+app.include_router(legacy_router)
+app.include_router(scoring_test_router)  # 개발/디버깅용 (/api/v1/debug)
 # app.include_router(performance_router, prefix="/api/v1")  # 임시 비활성화
 
 # 루트 엔드포인트

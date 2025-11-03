@@ -4,7 +4,7 @@ PostgreSQL에서 성분 정보 및 제품-성분 관계 조회
 추천 시스템용 canonical tags 추출 및 정규화
 """
 from typing import List, Dict, Optional, Any, Set, Tuple
-from app.database.postgres_db import get_postgres_db
+from app.database.postgres_sync import get_postgres_sync_db
 from app.models.postgres_models import Ingredient, ProductIngredient, ProductWithIngredients, Product
 import logging
 import json
@@ -15,13 +15,14 @@ class IngredientService:
     """성분 조회 서비스"""
     
     def __init__(self):
-        self.db = get_postgres_db()
+        self.db = get_postgres_sync_db()
     
     def get_ingredient_by_id(self, ingredient_id: int) -> Optional[Ingredient]:
         """성분 ID로 단일 성분 조회"""
-        query = "SELECT * FROM ingredients WHERE ingredient_id = ?"
+        query = "SELECT * FROM ingredients WHERE ingredient_id = %s"
         try:
-            row = self.db.execute_single(query, (ingredient_id,))
+            rows = self.db._execute_sync(query, (ingredient_id,))
+            row = rows[0] if rows else None
             return Ingredient(**row) if row else None
         except Exception as e:
             logger.error(f"성분 조회 오류 (ID: {ingredient_id}): {e}")
@@ -33,11 +34,11 @@ class IngredientService:
         SELECT i.* 
         FROM product_ingredients pi
         JOIN ingredients i ON pi.ingredient_id = i.ingredient_id
-        WHERE pi.product_id = ?
+        WHERE pi.product_id = %s
         ORDER BY pi.ordinal
         """
         try:
-            rows = self.db.execute_query(query, (product_id,))
+            rows = self.db._execute_sync(query, (product_id,))
             return [Ingredient(**row) for row in rows]
         except Exception as e:
             logger.error(f"제품 성분 조회 오류 (Product ID: {product_id}): {e}")
@@ -46,9 +47,10 @@ class IngredientService:
     def get_product_with_ingredients(self, product_id: int) -> Optional[ProductWithIngredients]:
         """제품과 성분 정보를 함께 조회"""
         # 제품 정보 조회
-        product_query = "SELECT * FROM products WHERE product_id = ?"
+        product_query = "SELECT * FROM products WHERE product_id = %s"
         try:
-            product_row = self.db.execute_single(product_query, (product_id,))
+            product_rows = self.db._execute_sync(product_query, (product_id,))
+            product_row = product_rows[0] if product_rows else None
             if not product_row:
                 return None
             
@@ -71,9 +73,9 @@ class IngredientService:
     
     def search_ingredients_by_tag(self, tag: str) -> List[Ingredient]:
         """특정 태그를 가진 성분들 조회"""
-        query = "SELECT * FROM ingredients WHERE tags LIKE ?"
+        query = "SELECT * FROM ingredients WHERE tags LIKE %s"
         try:
-            rows = self.db.execute_query(query, (f'%"{tag}"%',))
+            rows = self.db._execute_sync(query, (f'%"{tag}"%',))
             return [Ingredient(**row) for row in rows]
         except Exception as e:
             logger.error(f"태그별 성분 조회 오류 (Tag: {tag}): {e}")
@@ -85,11 +87,11 @@ class IngredientService:
         SELECT DISTINCT pi.product_id
         FROM product_ingredients pi
         JOIN ingredients i ON pi.ingredient_id = i.ingredient_id
-        WHERE i.tags LIKE ?
-        LIMIT ?
+        WHERE i.tags LIKE %s
+        LIMIT %s
         """
         try:
-            rows = self.db.execute_query(query, (f'%"{tag}"%', limit))
+            rows = self.db._execute_sync(query, (f'%"{tag}"%', limit))
             return [row['product_id'] for row in rows]
         except Exception as e:
             logger.error(f"태그별 제품 조회 오류 (Tag: {tag}): {e}")
@@ -99,16 +101,16 @@ class IngredientService:
         """성분 통계 정보"""
         try:
             total_query = "SELECT COUNT(*) as count FROM ingredients"
-            total_result = self.db.execute_single(total_query)
-            total_count = total_result['count'] if total_result else 0
+            total_results = self.db._execute_sync(total_query)
+            total_count = total_results[0]['count'] if total_results else 0
             
             allergy_query = "SELECT COUNT(*) as count FROM ingredients WHERE is_allergy = 1"
-            allergy_result = self.db.execute_single(allergy_query)
-            allergy_count = allergy_result['count'] if allergy_result else 0
+            allergy_results = self.db._execute_sync(allergy_query)
+            allergy_count = allergy_results[0]['count'] if allergy_results else 0
             
             tagged_query = "SELECT COUNT(*) as count FROM ingredients WHERE tags IS NOT NULL AND tags != '[]'"
-            tagged_result = self.db.execute_single(tagged_query)
-            tagged_count = tagged_result['count'] if tagged_result else 0
+            tagged_results = self.db._execute_sync(tagged_query)
+            tagged_count = tagged_results[0]['count'] if tagged_results else 0
             
             return {
                 'total_ingredients': total_count,
@@ -134,7 +136,7 @@ class IngredientService:
             return {}
         
         # IN 절을 위한 플레이스홀더 생성
-        placeholders = ','.join(['?' for _ in product_ids])
+        placeholders = ','.join(['%s' for _ in product_ids])
         query = f"""
         SELECT pi.product_id, i.tags
         FROM product_ingredients pi
@@ -146,7 +148,7 @@ class IngredientService:
         """
         
         try:
-            rows = self.db.execute_query(query, tuple(product_ids))
+            rows = self.db._execute_sync(query, tuple(product_ids))
             
             # 제품별 태그 수집
             product_tags = {}
@@ -227,12 +229,12 @@ class IngredientService:
             i.forbidden
         FROM product_ingredients pi
         JOIN ingredients i ON pi.ingredient_id = i.ingredient_id
-        WHERE pi.product_id = ?
+        WHERE pi.product_id = %s
         ORDER BY pi.ordinal
         """
         
         try:
-            rows = self.db.execute_query(query, (product_id,))
+            rows = self.db._execute_sync(query, (product_id,))
             
             safety_info = {
                 'total_ingredients': len(rows),
@@ -319,7 +321,7 @@ class IngredientService:
             params = []
             
             for tag in required_tags:
-                required_conditions.append("i.tags LIKE ?")
+                required_conditions.append("i.tags LIKE %s")
                 params.append(f'%"{tag}"%')
             
             base_query = f"""
@@ -333,7 +335,7 @@ class IngredientService:
             if excluded_tags:
                 excluded_conditions = []
                 for tag in excluded_tags:
-                    excluded_conditions.append("i2.tags LIKE ?")
+                    excluded_conditions.append("i2.tags LIKE %s")
                     params.append(f'%"{tag}"%')
                 
                 base_query += f"""
@@ -345,10 +347,10 @@ class IngredientService:
                 )
                 """
             
-            base_query += f" LIMIT ?"
+            base_query += f" LIMIT %s"
             params.append(limit)
             
-            rows = self.db.execute_query(base_query, tuple(params))
+            rows = self.db._execute_sync(base_query, tuple(params))
             product_ids = [row['product_id'] for row in rows]
             
             logger.debug(f"성분 태그 조건 검색 완료: 필수={required_tags}, "
@@ -374,7 +376,7 @@ class IngredientService:
             AND i.tags != '[]'
             """
             
-            rows = self.db.execute_query(query)
+            rows = self.db._execute_sync(query)
             
             tag_counts = {}
             total_tags = 0
